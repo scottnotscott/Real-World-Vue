@@ -20,5 +20,7 @@ npm run build
 npm run lint
 ```
 
-### Customize configuration
-See [Configuration Reference](https://cli.vuejs.org/config/).
+### 
+View the live version at: https://real-world-vue-haus.onrender.com
+
+Static Site Deployed via render.com
