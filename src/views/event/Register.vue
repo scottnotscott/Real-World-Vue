@@ -17,7 +17,7 @@ export default {
 
             setTimeout(() => {
                 this.GStore.flashmessage = ''
-            }, 3000)
+            },3000)
             this.$router.push({name: 'EventDetails'})
         }
     }

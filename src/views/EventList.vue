@@ -27,7 +27,7 @@
 // @ is an alias to /src
 import EventCard from "@/components/EventCard.vue";
 import EventService from '@/services/EventService.js';
-import { watchEffect } from 'vue';
+import Nprogress from 'nprogress'
 
 export default {
   name: "EventList",
@@ -41,18 +41,39 @@ export default {
       totalEvents: 0
     }
   },
-  created() {
-    watchEffect(() => {
-      this.events = null //clears out events on page making it look immediate
-      EventService.getEvents(2, this.page)
+  beforeRouteEnter(routeTo, routeFrom, next) {
+      Nprogress.start()
+      EventService.getEvents(2, parseInt(routeTo.query.page) || 1) 
       .then(response => {
+        next(comp => {
+         // continue routing and once component is loaded,
+         // set the values.
+         // I'm using comp (as in component)
+         // Vue internallytend to use vm (as in view model)
+         // I'm a network engineer so like to avoid vm as much as poss ;-)
+        comp.events = response.data
+        comp.totalEvents = response.headers['x-total-count']
+        })
+      })
+      .catch(() => {
+        next({name: 'NetworkError'})
+      }).finally(() => {
+        Nprogress.done()
+      })
+  },
+    beforeRouteUpdate(routeTo) {
+      Nprogress.start()
+      EventService.getEvents(2, parseInt(routeTo.query.page) || 1) 
+      .then(response => {
+        // have access to `this`
         this.events = response.data
         this.totalEvents = response.headers['x-total-count']
       })
       .catch(() => {
-        this.$router.push({ name: 'NetworkError'})
+        return {name: 'NetworkError'}
+      }).finally(() => {
+        Nprogress.done()
       })
-    })
   },
   computed: {
     hasNextPage() {
