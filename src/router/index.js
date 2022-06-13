@@ -48,6 +48,12 @@ const routes = [
     path: '/:catchAll(.*)', // matches all routes that don't match existing route
     name: 'NotFound',
     component: NotFound
+  },
+  {
+    path: '/404/:resource',
+    name: '404Resource',
+    component: NotFound,
+    props: true
   }
 ];
 
