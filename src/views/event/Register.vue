@@ -9,8 +9,15 @@
 
 export default {
     props: ['event'],
+    inject: ['GStore'],
     methods: {
         register() {
+
+            this.GStore.flashMessage = 'You are successfully registered for ' + this.event.title
+
+            setTimeout(() => {
+                this.GStore.flashmessage = ''
+            }, 3000)
             this.$router.push({name: 'EventDetails'})
         }
     }
