@@ -61,7 +61,7 @@ export default {
       })
   },
     beforeRouteUpdate(routeTo) {
-      EventService.getEvents(2, parseInt(routeTo.query.page) || 1) 
+      return EventService.getEvents(2, parseInt(routeTo.query.page) || 1) 
       .then(response => {
         // have access to `this`
         this.events = response.data
