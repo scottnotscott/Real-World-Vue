@@ -7,6 +7,7 @@ import EventLayout from "../views/event/Layout.vue";
 import About from '../views/About.vue'
 import NotFound from '../views/NotFound.vue'
 import NetworkError from '../views/NetworkError.vue'
+import Nprogress from 'nprogress'
 
 const routes = [
   {
@@ -67,5 +68,13 @@ const router = createRouter({
   history: createWebHistory(process.env.BASE_URL),
   routes,
 });
+
+router.beforeEach(() => {
+  Nprogress.start()
+})
+
+router.afterEach(() => {
+  Nprogress.done()
+})
 
 export default router;

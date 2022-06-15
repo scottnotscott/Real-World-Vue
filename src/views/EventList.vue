@@ -42,7 +42,6 @@ export default {
     }
   },
   beforeRouteEnter(routeTo, routeFrom, next) {
-      Nprogress.start()
       EventService.getEvents(2, parseInt(routeTo.query.page) || 1) 
       .then(response => {
         next(comp => {
@@ -62,7 +61,6 @@ export default {
       })
   },
     beforeRouteUpdate(routeTo) {
-      Nprogress.start()
       EventService.getEvents(2, parseInt(routeTo.query.page) || 1) 
       .then(response => {
         // have access to `this`
@@ -71,8 +69,6 @@ export default {
       })
       .catch(() => {
         return {name: 'NetworkError'}
-      }).finally(() => {
-        Nprogress.done()
       })
   },
   computed: {
