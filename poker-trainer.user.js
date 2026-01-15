@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.4
+// @version      3.9.6
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -1115,7 +1115,7 @@
       }
       #tp_holdem_hud .tp-badge{
         font-weight: 950;
-        font-size: ${Math.max(9, Math.round(HUD.titlePx * 0.2))}px;
+        font-size: ${Math.max(2, Math.round(HUD.titlePx * 0.04))}px;
         letter-spacing: 0.5px;
         padding: 4px 10px;
         border-radius: 999px;
@@ -1410,10 +1410,10 @@
             <button class="tp-helpClose" id="tp_help_close" type="button" aria-label="Close">×</button>
           </div>
           <div class="tp-helpBody">
-            <div class="tp-helpItem"><span class="tp-helpTerm">Stack</span>: Chips you (or villain) have left.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Shove</span>: Go all-in.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Need%</span>: Minimum win % to call profitably.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">SPR</span>: Stack-to-pot ratio (lower = pot is big vs stacks).</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">VPIP</span>: % of hands you voluntarily put chips in preflop.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">PFR</span>: % of hands you raised preflop.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Broadway</span>: A,K,Q,J,10 ranks.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Tight</span>: Plays fewer hands.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Loose</span>: Plays more hands.</div>
@@ -1821,7 +1821,7 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.4";
+      badge.textContent = "PMON v3.9.6";
       sub.textContent = "Waiting…";
       // streetEl.textContent = "";
       bar.style.width = "0%";
@@ -1851,7 +1851,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.4";
+    badge.textContent = "PMON v3.9.6";
     sub.textContent = state.titleLine || "…";
     // streetEl.textContent = state.street || "";
 
