@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.6
+// @version      3.9.7
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -1127,11 +1127,24 @@
       #tp_holdem_hud .tp-sub{
         flex: 1;
         min-width: 0;
-        font-size: ${HUD.fontPx}px;
+        font-size: ${Math.max(9, Math.round(HUD.fontPx * 0.75))}px;
         opacity: 0.95;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        transition: color 160ms ease, filter 160ms ease;
+      }
+      #tp_holdem_hud .tp-sub.tone-mute{ color: #c9c9cf; }
+      #tp_holdem_hud .tp-sub.tone-warn{ color: #ff8e8e; }
+      #tp_holdem_hud .tp-sub.tone-mid{ color: #f4d777; }
+      #tp_holdem_hud .tp-sub.tone-good{ color: #9de58a; }
+      #tp_holdem_hud .tp-sub.rainbow{
+        background-image: linear-gradient(90deg, #ff5f6d, #ffc371, #f6ff00, #64ff6a, #52b7ff, #a855f7, #ff5fd7);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        -webkit-text-fill-color: transparent;
+        filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5));
       }
       #tp_holdem_hud .tp-helpBtn{
         cursor: pointer;
@@ -1383,9 +1396,9 @@
 
         <div class="tp-grid">
           <div class="tp-card">
-            <h4>Hand</h4>
+            <h4>Hit</h4>
             <div class="tp-line tp-big" id="tp_hit">…</div>
-            <div class="tp-line tp-dim" id="tp_you">Your Hand: …</div>
+            <div class="tp-line tp-dim" id="tp_you"></div>
           </div>
 
           <div class="tp-card">
@@ -1608,11 +1621,6 @@
     set("#tp_stat_net", (net >= 0 ? "+" : "-") + fmtMoney(Math.abs(net)));
   }
 
-  function toneByWin(winPct) {
-    if (typeof winPct !== "number") return "mute";
-    return winPct >= 65 ? "good" : winPct >= 45 ? "info" : "warn";
-  }
-
   function excitementLabel(cat) {
     if (cat >= 8) return "🚨 STRAIGHT FLUSH";
     if (cat === 7) return "🚨 QUADS";
@@ -1622,7 +1630,48 @@
     if (cat === 3) return "💥 TRIPS";
     if (cat === 2) return "✅ TWO PAIR";
     if (cat === 1) return "✅ PAIR";
-    return "NO HIT";
+    return "HIGH CARD";
+  }
+
+  function boardOnlyHitLabel(pairInfo) {
+    const t = (pairInfo?.text || "").toLowerCase();
+    if (t.includes("quads")) return "BOARD QUADS";
+    if (t.includes("full house")) return "BOARD FULL HOUSE";
+    if (t.includes("trips")) return "BOARD TRIPS";
+    if (t.includes("two pair")) return "BOARD TWO PAIR";
+    if (t.includes("pair")) return "BOARD PAIR";
+    return "BOARD PAIR";
+  }
+
+  function hitSummary(cat, pairInfo) {
+    if (pairInfo?.boardOnly) return boardOnlyHitLabel(pairInfo);
+    return excitementLabel(cat);
+  }
+
+  function applySubTone(sub, winPct) {
+    if (!sub) return;
+    sub.classList.remove("tone-mute", "tone-warn", "tone-mid", "tone-good", "rainbow");
+    sub.style.color = "";
+    sub.style.webkitTextFillColor = "";
+    if (typeof winPct !== "number") {
+      sub.classList.add("tone-mute");
+      return;
+    }
+    const w = Math.max(0, Math.min(100, winPct));
+    if (w >= 80) {
+      sub.classList.add("rainbow");
+      return;
+    }
+    const hue = Math.round(120 * (w / 100));
+    sub.style.color = `hsl(${hue}, 80%, 65%)`;
+    if (w >= 65) sub.classList.add("tone-good");
+    else if (w >= 45) sub.classList.add("tone-mid");
+    else sub.classList.add("tone-warn");
+  }
+
+  function toneByWin(winPct) {
+    if (typeof winPct !== "number") return "mute";
+    return winPct >= 65 ? "good" : winPct >= 45 ? "info" : "warn";
   }
 
   function wantsNextCards(dist) {
@@ -1650,29 +1699,29 @@
     const premium = (pair && hi >= 11) || (hi >= 13 && lo >= 12);
 
     const context = `${oppCount || "?"} opp`;
-    const baseWhy = `Preflop strength ~${strengthPct}%. ${context}.`;
+    const baseWhy = `Preflop vs ${context}.`;
 
     if (!toCall || toCall <= 0) {
       if (strength >= openThresh || premium) {
-        return { act: shortStack ? "RAISE (COMMIT)" : "RAISE", why: `${baseWhy} Strong open.`, tone: "info", strengthPct };
+        return { act: shortStack ? "RAISE (COMMIT)" : "RAISE", why: `${baseWhy} Strong start. Take the lead.`, tone: "info", strengthPct };
       }
       if (strength >= callThresh) {
-        return { act: "CHECK (or SMALL OPEN)", why: `${baseWhy} Marginal; keep it small.`, tone: "mute", strengthPct };
+        return { act: "CHECK (or SMALL OPEN)", why: `${baseWhy} Playable. Keep it small.`, tone: "mute", strengthPct };
       }
-      return { act: "CHECK", why: `${baseWhy} Too weak to open.`, tone: "mute", strengthPct };
+      return { act: "CHECK", why: `${baseWhy} Not enough. Easy check.`, tone: "mute", strengthPct };
     }
 
     if (strength >= shoveThresh && shortStack) {
-      return { act: "RAISE (ALL-IN)", why: `${baseWhy} Strong hand + short stack.`, tone: "good", strengthPct };
+      return { act: "RAISE (ALL-IN)", why: `${baseWhy} Short stack and strong hand. Put it in.`, tone: "good", strengthPct };
     }
     if (strength >= openThresh || premium) {
-      return { act: "RAISE", why: `${baseWhy} Strong continue.`, tone: "info", strengthPct };
+      return { act: "RAISE", why: `${baseWhy} Strong enough to push back.`, tone: "info", strengthPct };
     }
     if (strength >= callThresh || strengthPct >= priceNeed) {
-      const priceNote = callUnknown ? "Price unknown." : "Price OK vs strength.";
+      const priceNote = callUnknown ? "Price is a mystery, but this is OK." : "Looks fine to continue.";
       return { act: "CALL", why: `${baseWhy} ${priceNote}`, tone: "info", strengthPct };
     }
-    return { act: "FOLD", why: `${baseWhy} Too weak vs price.`, tone: "warn", strengthPct };
+    return { act: "FOLD", why: `${baseWhy} Not worth it. Save the chips.`, tone: "warn", strengthPct };
   }
 
   function preflopHandLabel(hero) {
@@ -1730,8 +1779,8 @@
     const strong = adjustedCat >= 4;
     const medium = adjustedCat >= 2;
     const stackNote = callPctStack >= 0.5
-      ? "High stack risk."
-      : (spr > 0 && spr <= 2 ? `Short stack (SPR ${spr.toFixed(1)}).` : "");
+      ? "Big chunk of your stack."
+      : (spr > 0 && spr <= 2 ? "Short stacks." : "");
     const action = (act, why, tone) => ({ act, why: stackNote ? `${why} ${stackNote}` : why, tone });
     const heroStack = stackInfo?.heroStack || 0;
 
@@ -1747,54 +1796,54 @@
     const callRequired = callUnknown || (toCall && toCall > 0);
     if (!callRequired) {
       if (boardOnly && adjustedCat <= 1) {
-        return action("CHECK", "Board pair only. Keep the pot small.", "mute");
+        return action("CHECK", "Board pair only. Keep it small.", "mute");
       }
       if (monster) return action(`BET ${betLabel}`, "You hit huge. Build a pot.", "good");
-      if (strong) return action(`BET ${betLabel}`, hasDrawyBoard ? "Charge draws." : "Push advantage.", "info");
+      if (strong) return action(`BET ${betLabel}`, hasDrawyBoard ? "Don't give free cards." : "You're ahead. Keep the pressure on.", "info");
       if (medium) {
-        return action(`BET ${betLabel}`, boardOnly ? "Thin value on a paired board." : "Apply pressure, maybe takes it down.", "info");
+        return action(`BET ${betLabel}`, boardOnly ? "Paired board. Small poke is fine." : "Decent hand. Take a small shot.", "info");
       }
       if (!isRiver && improve >= 28) {
         const semiBet = Math.max(1, Math.round(pot * 0.55));
         const semiLabel = wagerLabel(semiBet, "SMALL", heroStack);
-        return action(`BET ${semiLabel}`, `Semi-bluff. Improve chance ~${improve}%.`, "info");
+        return action(`BET ${semiLabel}`, "Take a stab; you can still improve.", "info");
       }
       return action("CHECK", "No hand yet. Check if you can.", "mute");
     }
 
     if (eq >= Math.max(70, callThresh + 15)) {
-      return action(`RAISE ${raiseLabel}`, "Crushing. Get paid.", "good");
+      return action(`RAISE ${raiseLabel}`, "Crushing it. Get paid.", "good");
     }
 
     if (eq >= Math.max(callThresh + 6, 55)) {
-      return action(`CALL (or RAISE ${raiseLabel})`, hasDrawyBoard ? "Ahead—punish draws." : "Ahead often enough.", "info");
+      return action(`CALL (or RAISE ${raiseLabel})`, hasDrawyBoard ? "Ahead. Make them pay to see more." : "Ahead often. Lean in.", "info");
     }
 
     if (eq >= callThresh) {
       if (!isRiver && improve >= 24 && eq < 55) {
-        return action("CALL", `Price is OK + improve ~${improve}%.`, "info");
+        return action("CALL", "Close call, but you can still improve.", "info");
       }
       if (priceNeed == null) {
-        return action("CALL", `Price unknown. You have ~${eq}%.`, "info");
+        return action("CALL", "Price is unclear, but it's close enough.", "info");
       }
-      return action("CALL", `Price OK. Need ~${priceNeed}%; you have ~${eq}%.`, "info");
+      return action("CALL", "Call is fine. Don't overthink it.", "info");
     }
 
     if (!isRiver && cheapCall && eq >= Math.max(30, callThresh - 6)) {
-      return action("CALL (SPECULATIVE)", "Cheap price for a shot.", "info");
+      return action("CALL (SPECULATIVE)", "Cheap peek. Why not.", "info");
     }
 
     if (!isRiver && improve >= 35 && eq >= bluffThresh) {
       if (priceNeed == null) {
-        return action(`CALL (DRAW)`, `Behind now, improve ~${improve}%. Price unknown.`, "info");
+        return action("CALL", "You might improve. Worth a look.", "info");
       }
-      return action(`CALL (DRAW)`, `Behind now, but improve ~${improve}%. Need ~${priceNeed}%.`, "info");
+      return action("CALL", "You might improve. Worth a look.", "info");
     }
 
     if (priceNeed == null) {
-      return action("FOLD", `Price unknown. You have ~${eq}%.`, "warn");
+      return action("FOLD", "Price is unclear and this is thin. Easy fold.", "warn");
     }
-    return action("FOLD", `Too expensive. Need ~${priceNeed}%; you have ~${eq}%.`, "warn");
+    return action("FOLD", "Too expensive for what you have. Save the chips.", "warn");
   }
 
   let _lastRenderedState = null;
@@ -1821,13 +1870,17 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.6";
+      badge.textContent = "PMON v3.9.7";
       sub.textContent = "Waiting…";
+      applySubTone(sub, null);
       // streetEl.textContent = "";
       bar.style.width = "0%";
 
       hitEl.textContent = "->";
-      youEl.textContent = "Your hand: ->";
+      if (youEl) {
+        youEl.textContent = "";
+        youEl.style.display = "none";
+      }
 
       winEl.textContent = "Win: …";
       confEl.textContent = "Confidence: …";
@@ -1851,15 +1904,15 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.6";
+    badge.textContent = "PMON v3.9.7";
     sub.textContent = state.titleLine || "…";
+    applySubTone(sub, typeof state.winPct === "number" ? state.winPct : null);
     // streetEl.textContent = state.street || "";
 
     const w = typeof state.winPct === "number" ? Math.max(0, Math.min(100, state.winPct)) : 0;
     bar.style.width = w + "%";
 
-    hitEl.textContent = state.hitLabel || state.currentHit || "…";
-    youEl.textContent = `Your hand: ${state.heroText || "N/A"}`;
+    hitEl.textContent = state.hitText || state.hitLabel || state.currentHit || "…";
 
     const setLine = (el, text) => {
       if (!el) return;
@@ -1868,12 +1921,14 @@
       el.style.display = t ? "" : "none";
     };
 
+    setLine(youEl, "");
+
     const showWin = !!state.showWin || state.boardLen >= 3;
     if (showWin && typeof state.winPct === "number") {
       winEl.textContent = `Win: ${state.winPct}%`;
       setLine(confEl, `Confidence: ${state.eqConf || 0}%`);
     } else {
-      winEl.textContent = HUD.showPreflop ? "Win: will start after flop" : "Win: …";
+      winEl.textContent = HUD.showPreflop ? "Win: will start when cards are drawn" : "Win: …";
       setLine(confEl, state.eqConf ? `Confidence: ${state.eqConf}%` : "");
     }
 
@@ -1981,6 +2036,8 @@
       const preLabel = preflopHandLabel(hero);
       const hitCat = hero[0].rank === hero[1].rank ? 1 : 0;
       const hitLabel = excitementLabel(hitCat);
+      const pairInfo = pairContext(hero, board);
+      const hitText = hitSummary(hitCat, pairInfo);
       const oppSig = opponentSignature(opponents);
       const preKey = hero.map(c => c.txt).join("") + "|" + oppCount + "|" + oppSig;
       let preEq = _preflopCache.key === preKey ? _preflopCache.eq : null;
@@ -2001,6 +2058,7 @@
         currentHit: preLabel,
         hitCat,
         hitLabel,
+        hitText,
         winPct: preEq?.winPct ?? null,
         splitPct: preEq?.splitPct ?? null,
         beats: preEq?.beatsAvg ?? 0,
@@ -2032,6 +2090,7 @@
 
     const risks = boardRisks(board);
     const pairInfo = pairContext(hero, board);
+    const hitText = hitSummary(hitCat, pairInfo);
 
     const dist = (board.length === 3 || board.length === 4) ? finalDistribution(hero, board) : null;
     const want = wantsNextCards(dist);
@@ -2045,7 +2104,7 @@
     let whyExtra = "";
     if (want && (st === "Flop" || st === "Turn")) {
       const improve = dist?.reachPct ? Math.max(dist.reachPct.strPlus || 0, dist.reachPct.flPlus || 0, dist.reachPct.fhPlus || 0) : 0;
-      if (improve >= 20) whyExtra = `Likely by river: ${want.reach || want.top || ""}`.trim();
+      if (improve >= 20) whyExtra = "You can still catch help on later cards.";
     }
 
     renderHud({
@@ -2063,6 +2122,7 @@
       currentHit,
       hitCat,
       hitLabel,
+      hitText,
 
       risks,
       pairCtx: pairInfo.text,
