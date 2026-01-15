@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.0
+// @version      3.9.1
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -24,13 +24,7 @@
   const GIVEUP_WINDOW_ACTS = 6;
   const CONF_SOFTCAP = 18;
 
-  const LS_MODE = "tpda_poker_mode_v1";
-  const MODES = [
-    { key: "strict", label: "Strict", desc: "Reduce losses", callEdge: +0.08, bluffEdge: +0.10, betPot: [0.45, 0.60, 0.80], raisePot: [0.70, 0.95, 1.25] },
-    { key: "normal", label: "Normal", desc: "Standard risk", callEdge: +0.03, bluffEdge: +0.05, betPot: [0.55, 0.70, 0.90], raisePot: [0.85, 1.10, 1.35] },
-    { key: "gambler", label: "Gambler", desc: "Profit-hungry, calculated", callEdge: -0.03, bluffEdge: -0.02, betPot: [0.70, 0.85, 1.05], raisePot: [1.05, 1.35, 1.70] },
-    { key: "maniac", label: "Maniac", desc: "Aggressive, high-risk reward", callEdge: -0.08, bluffEdge: -0.10, betPot: [0.85, 1.05, 1.35], raisePot: [1.35, 1.80, 2.40] }
-  ];
+  const MODE = { key: "normal", label: "Normal", desc: "Standard risk", callEdge: +0.03, bluffEdge: +0.05, betPot: [0.55, 0.70, 0.90], raisePot: [0.85, 1.10, 1.35] };
 
   // HUD pinned to top, wider, shorter (more horizontal layout)
   const HUD = {
@@ -558,33 +552,70 @@
     return 0;
   }
 
+  function extractAmounts(text) {
+    const t = String(text || "");
+    const matches = t.match(/\$[\d,]+/g) || [];
+    return matches.map(toInt).filter(n => n > 0);
+  }
+
+  function getElementTextVariants(el) {
+    if (!el) return [];
+    const t = String(el.textContent || "");
+    const a = el.getAttribute ? el.getAttribute("aria-label") : "";
+    const title = el.getAttribute ? el.getAttribute("title") : "";
+    const tip = el.getAttribute ? el.getAttribute("data-tip") : "";
+    const tooltip = el.getAttribute ? el.getAttribute("data-tooltip") : "";
+    const orig = el.getAttribute ? el.getAttribute("data-original-title") : "";
+    const dataAmount = el.getAttribute ? el.getAttribute("data-amount") : "";
+    const dataValue = el.getAttribute ? el.getAttribute("data-value") : "";
+    const dataBet = el.getAttribute ? el.getAttribute("data-bet") : "";
+    const dataCall = el.getAttribute ? el.getAttribute("data-call") : "";
+    const maybeNum = (v) => (v && /^\d[\d,]*$/.test(v) ? `$${v}` : v);
+    return [t, a, title, tip, tooltip, orig, maybeNum(dataAmount), maybeNum(dataValue), maybeNum(dataBet), maybeNum(dataCall)].filter(Boolean);
+  }
+
   function findToCall() {
     const btns = [
       ...document.querySelectorAll("button, [role='button'], a, div")
     ].slice(0, 500);
 
     let sawCheck = false;
+    let sawCall = false;
+    let sawAllIn = false;
     let callAmount = 0;
     let allInAmount = 0;
 
     for (const el of btns) {
-      const t = (el && el.textContent) ? String(el.textContent).trim() : "";
-      if (!t) continue;
+      const texts = getElementTextVariants(el);
+      if (!texts.length) continue;
 
-      if (/^Check\b/i.test(t) || /Check\s*\/\s*Fold/i.test(t)) sawCheck = true;
+      for (const t0 of texts) {
+        const t = String(t0 || "").trim();
+        if (!t) continue;
 
-      const m1 = t.match(/^Call\s*\$?([\d,]+)/i);
-      if (m1) callAmount = Math.max(callAmount, toInt(m1[1]));
+        if (/^Check\b/i.test(t) || /Check\s*\/\s*Fold/i.test(t)) sawCheck = true;
+        if (/Call\b/i.test(t)) sawCall = true;
+        if (/All\s*In/i.test(t)) sawAllIn = true;
 
-      if (/Call Any/i.test(t)) callAmount = 0;
+        const amounts = extractAmounts(t);
+        if (amounts.length) {
+          if (/Call\b/i.test(t)) callAmount = Math.max(callAmount, ...amounts);
+          if (/All\s*In/i.test(t)) allInAmount = Math.max(allInAmount, ...amounts);
+        }
 
-      const m2 = t.match(/All\s*In\s*\$?([\d,]+)/i);
-      if (m2) allInAmount = Math.max(allInAmount, toInt(m2[1]));
+        const m1 = t.match(/^Call\s*\$?([\d,]+)/i);
+        if (m1) callAmount = Math.max(callAmount, toInt(m1[1]));
+
+        const m2 = t.match(/All\s*In\s*\$?([\d,]+)/i);
+        if (m2) allInAmount = Math.max(allInAmount, toInt(m2[1]));
+
+        if (/Call Any/i.test(t)) callAmount = 0;
+      }
     }
 
-    if (callAmount > 0) return callAmount;
-    if (allInAmount > 0) return allInAmount;
-    return sawCheck ? 0 : 0;
+    const amount = Math.max(callAmount, allInAmount);
+    const unknown = amount <= 0 && (sawCall || sawAllIn);
+    return { amount, unknown, sawCheck, sawAllIn };
   }
 
   function findBlindsFromFeed() {
@@ -630,11 +661,8 @@
   function saveLS(key, obj) { try { localStorage.setItem(key, JSON.stringify(obj)); } catch { } }
 
   function getMode() {
-    const v = loadLS(LS_MODE, null);
-    const key = (v && v.key) ? String(v.key) : "maniac";
-    return MODES.find(m => m.key === key) || MODES[3];
+    return MODE;
   }
-  function setModeKey(k) { saveLS(LS_MODE, { key: k }); }
 
   /* ===================== FEED PARSING (seat reads unchanged) ===================== */
   function nodeText(el) { return el ? String(el.textContent || "").trim() : ""; }
@@ -917,7 +945,6 @@
   /* ===================== HUD (TOP OF VIEWPORT) ===================== */
   let _lastHitCat = -1;
   let _lastKey = "";
-  let _lastModeKey = getMode().key;
   let _preflopCache = { key: "", eq: null, iters: 0 };
 
   function ensureHudStyle() {
@@ -950,6 +977,7 @@
         backdrop-filter: blur(5px);
         max-height: ${HUD.maxHeightVh}vh;
         overflow: hidden;
+        position: relative;
       }
 
       /* Header */
@@ -967,16 +995,6 @@
         text-shadow: 0 1px 2px rgba(0,0,0,0.85);
         white-space: nowrap;
       }
-      #tp_holdem_hud .tp-modeBtn{
-        cursor: pointer;
-        font-weight: 900;
-        font-size: ${HUD.fontPx}px;
-        padding: 4px 10px;
-        border-radius: 999px;
-        border: 1px solid rgba(255,255,255,0.18);
-        background: rgba(255,255,255,0.08);
-        color: #fff;
-      }
       #tp_holdem_hud .tp-sub{
         flex: 1;
         min-width: 0;
@@ -985,6 +1003,18 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+      #tp_holdem_hud .tp-helpBtn{
+        cursor: pointer;
+        font-weight: 900;
+        font-size: ${HUD.fontPx}px;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 1px solid rgba(255,255,255,0.2);
+        background: rgba(255,255,255,0.08);
+        color: #fff;
+        line-height: 1;
       }
       #tp_holdem_hud .tp-street{
         font-weight: 950;
@@ -1020,7 +1050,7 @@
       #tp_holdem_hud .tp-grid{
         margin-top: 8px;
         display: grid;
-        grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr) max-content minmax(0, 1fr);
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.2fr);
         gap: 8px;
         align-items: stretch;
       }
@@ -1064,14 +1094,42 @@
       }
       #tp_holdem_hud .tp-dim{ opacity: 0.75; }
 
-      /* Price card: fit content width (column is max-content) */
-      #tp_holdem_hud .tp-card.tp-price{
-        width: fit-content;
-        justify-self: start;
+      #tp_holdem_hud .tp-help{
+        position: absolute;
+        right: 10px;
+        top: 38px;
+        width: min(360px, 92vw);
+        background: rgba(12,12,14,0.95);
+        border: 1px solid rgba(255,255,255,0.16);
+        border-radius: 12px;
+        padding: 8px 10px;
+        display: none;
+        box-shadow: 0 12px 26px rgba(0,0,0,0.55);
       }
-      #tp_holdem_hud .tp-card.tp-price .tp-line{
-        white-space: nowrap;
+      #tp_holdem_hud .tp-help.is-open{ display: block; }
+      #tp_holdem_hud .tp-helpHead{
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        font-weight: 900;
+        font-size: ${HUD.fontPx}px;
+        margin-bottom: 6px;
       }
+      #tp_holdem_hud .tp-helpClose{
+        cursor: pointer;
+        border: 0;
+        background: transparent;
+        color: #fff;
+        font-size: ${HUD.fontPx}px;
+        padding: 0 4px;
+      }
+      #tp_holdem_hud .tp-helpBody{
+        font-size: ${HUD.fontPx}px;
+        line-height: 1.35;
+        opacity: 0.92;
+      }
+      #tp_holdem_hud .tp-helpItem{ margin-top: 6px; }
+      #tp_holdem_hud .tp-helpTerm{ font-weight: 900; }
 
       /* Advice card: wrap text so it stays INSIDE the pill */
       #tp_holdem_hud .tp-card.tp-advice{
@@ -1126,8 +1184,8 @@
       <div class="tp-wrap">
         <div class="tp-head">
           <div class="tp-badge" id="tp_badge">TP</div>
-          <button class="tp-modeBtn" id="tp_modeBtn" type="button">Mode: …</button>
           <div class="tp-sub" id="tp_sub">Loading…</div>
+          <button class="tp-helpBtn" id="tp_help_btn" type="button" title="Help">?</button>
         </div>
 
         <div class="tp-bar"><div id="tp_bar"></div></div>
@@ -1147,39 +1205,59 @@
             <div class="tp-line tp-dim" id="tp_conf">Confidence: …</div>
           </div>
 
-          <div class="tp-card tp-price">
-            <h4>Price</h4>
-            <div class="tp-line" id="tp_price">…</div>
-            <div class="tp-line tp-dim" id="tp_pot">Pot: …</div>
-            <div class="tp-line tp-dim" id="tp_stack">Stack: …</div>
-            <div class="tp-line tp-dim" id="tp_blinds">Blinds: …</div>
-          </div>
-
           <div class="tp-card tp-advice">
             <h4>Advice</h4>
             <div class="tp-line tp-advice" id="tp_advice">…</div>
             <div class="tp-line tp-dim" id="tp_why">…</div>
+            <div class="tp-line tp-dim" id="tp_meta">…</div>
             <div class="tp-line tp-dim" id="tp_risks">…</div>
             <div class="tp-line tp-dim" id="tp_loseTo">…</div>
+          </div>
+        </div>
+
+        <div class="tp-help" id="tp_help" role="dialog" aria-hidden="true">
+          <div class="tp-helpHead">
+            <div>Glossary</div>
+            <button class="tp-helpClose" id="tp_help_close" type="button" aria-label="Close">×</button>
+          </div>
+          <div class="tp-helpBody">
+            <div class="tp-helpItem"><span class="tp-helpTerm">Stack</span>: Chips you (or villain) have left.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Shove</span>: Go all-in.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Need%</span>: Minimum win % to call profitably.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">SPR</span>: Stack-to-pot ratio (lower = pot is big vs stacks).</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Tight</span>: Plays fewer hands.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Loose</span>: Plays more hands.</div>
           </div>
         </div>
       </div>
     `;
     document.documentElement.appendChild(hud);
 
-    // Mode cycling
-    const btn = hud.querySelector("#tp_modeBtn");
-    btn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const cur = getMode();
-      const idx = MODES.findIndex(m => m.key === cur.key);
-      const next = MODES[(idx + 1 + MODES.length) % MODES.length];
-      setModeKey(next.key);
-      _lastModeKey = next.key;
-      _lastKey = "";
-      renderHud(_lastRenderedState || null);
-    }, { passive: false });
+    const helpBtn = hud.querySelector("#tp_help_btn");
+    const help = hud.querySelector("#tp_help");
+    const helpClose = hud.querySelector("#tp_help_close");
+
+    const setHelpOpen = (open) => {
+      if (!help) return;
+      help.classList.toggle("is-open", open);
+      help.setAttribute("aria-hidden", open ? "false" : "true");
+    };
+
+    if (helpBtn) {
+      helpBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const isOpen = help && help.classList.contains("is-open");
+        setHelpOpen(!isOpen);
+      }, { passive: false });
+    }
+    if (helpClose) {
+      helpClose.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setHelpOpen(false);
+      }, { passive: false });
+    }
 
     return hud;
   }
@@ -1225,7 +1303,8 @@
     const openThresh = 0.62 + multiAdj + stackAdj;
     const callThresh = 0.46 + multiAdj + stackAdj;
     const shoveThresh = 0.78 + multiAdj;
-    const priceNeed = potOddsPct(pot, toCall);
+    const callUnknown = !!stackInfo?.callUnknown;
+    const priceNeed = callUnknown ? 50 : potOddsPct(pot, toCall);
 
     const hi = Math.max(hero[0].rank, hero[1].rank);
     const lo = Math.min(hero[0].rank, hero[1].rank);
@@ -1252,7 +1331,8 @@
       return { act: "RAISE", why: `${baseWhy} Strong continue.`, tone: "info", strengthPct };
     }
     if (strength >= callThresh || strengthPct >= priceNeed) {
-      return { act: "CALL", why: `${baseWhy} Price OK vs strength.`, tone: "info", strengthPct };
+      const priceNote = callUnknown ? "Price unknown." : "Price OK vs strength.";
+      return { act: "CALL", why: `${baseWhy} ${priceNote}`, tone: "info", strengthPct };
     }
     return { act: "FOLD", why: `${baseWhy} Too weak vs price.`, tone: "warn", strengthPct };
   }
@@ -1275,20 +1355,22 @@
     const spr = stackInfo?.spr || 0;
     const callPctStack = stackInfo?.callPctStack || 0;
     const oppCount = stackInfo?.opponents || 0;
+    const callUnknown = !!stackInfo?.callUnknown;
 
     const improve =
       dist?.reachPct
         ? Math.max(dist.reachPct.strPlus || 0, dist.reachPct.flPlus || 0, dist.reachPct.fhPlus || 0)
         : 0;
 
-    const priceNeed = potOddsPct(pot, toCall);
+    const priceNeed = callUnknown ? null : potOddsPct(pot, toCall);
 
-    let callThresh = Math.max(0, Math.min(100, priceNeed + Math.round(mode.callEdge * 100)));
+    let callThresh = Math.max(0, Math.min(100, (priceNeed ?? 50) + Math.round(mode.callEdge * 100)));
     if (oppCount >= 3 && adjustedCat < 4) callThresh += 4;
     if (callPctStack >= 0.5 && adjustedCat < 4) callThresh += 8;
     if (spr > 0 && spr <= 2 && adjustedCat < 3) callThresh += 6;
     callThresh = clamp(callThresh, 0, 95);
-    const bluffThresh = Math.max(0, Math.min(100, priceNeed + Math.round(mode.bluffEdge * 100)));
+    const bluffBase = priceNeed ?? 50;
+    const bluffThresh = Math.max(0, Math.min(100, bluffBase + Math.round(mode.bluffEdge * 100)));
 
     const isRiver = streetName === "River";
     const hasDrawyBoard = risks && risks.some(r => r.includes("straight") || r.includes("Straight") || r.includes("flush") || r.includes("Flush"));
@@ -1310,18 +1392,17 @@
     const betLabel = wagerLabel(suggestedBet, monster ? "BIG" : strong ? "MED" : "SMALL", heroStack);
     const raiseLabel = wagerLabel(suggestedRaise, "BIG", heroStack);
 
-    if (!toCall || toCall <= 0) {
+    const callRequired = callUnknown || (toCall && toCall > 0);
+    if (!callRequired) {
       if (boardOnly && adjustedCat <= 1) {
         return action("CHECK", "Board pair only. Keep the pot small.", "mute");
       }
       if (monster) return action(`BET ${betLabel}`, "You hit huge. Build a pot.", "good");
       if (strong) return action(`BET ${betLabel}`, hasDrawyBoard ? "Charge draws." : "Push advantage.", "info");
       if (medium) {
-        if (mode.key === "strict") return action("CHECK", boardOnly ? "Board pair only. Pot control." : "Medium hand, keep it tidy.", "mute");
         return action(`BET ${betLabel}`, boardOnly ? "Thin value on a paired board." : "Apply pressure, maybe takes it down.", "info");
       }
-      if (mode.key === "strict") return action("CHECK", "No hand yet. Avoid donating.", "mute");
-      if (!isRiver && improve >= (mode.key === "maniac" ? 20 : 28)) {
+      if (!isRiver && improve >= 28) {
         const semiBet = Math.max(1, Math.round(pot * 0.55));
         const semiLabel = wagerLabel(semiBet, "SMALL", heroStack);
         return action(`BET ${semiLabel}`, `Semi-bluff. Improve chance ~${improve}%.`, "info");
@@ -1338,20 +1419,25 @@
     }
 
     if (eq >= callThresh) {
-      if (!isRiver && improve >= (mode.key === "maniac" ? 18 : 24) && eq < 55) {
+      if (!isRiver && improve >= 24 && eq < 55) {
         return action("CALL", `Price is OK + improve ~${improve}%.`, "info");
+      }
+      if (priceNeed == null) {
+        return action("CALL", `Price unknown. You have ~${eq}%.`, "info");
       }
       return action("CALL", `Price OK. Need ~${priceNeed}%; you have ~${eq}%.`, "info");
     }
 
-    if (!isRiver && improve >= (mode.key === "maniac" ? 22 : mode.key === "gambler" ? 28 : 35) && eq >= bluffThresh) {
+    if (!isRiver && improve >= 35 && eq >= bluffThresh) {
+      if (priceNeed == null) {
+        return action(`CALL (DRAW)`, `Behind now, improve ~${improve}%. Price unknown.`, "info");
+      }
       return action(`CALL (DRAW)`, `Behind now, but improve ~${improve}%. Need ~${priceNeed}%.`, "info");
     }
 
-    if (mode.key === "maniac" && eq >= Math.max(35, priceNeed - 8) && riskCount === 0 && !isRiver) {
-      return action("CALL (PUNT)", "Mode bias: take shots when close.", "warn");
+    if (priceNeed == null) {
+      return action("FOLD", `Price unknown. You have ~${eq}%.`, "warn");
     }
-
     return action("FOLD", `Too expensive. Need ~${priceNeed}%; you have ~${eq}%.`, "warn");
   }
 
@@ -1361,10 +1447,7 @@
     const hud = ensureHud();
     positionHud();
 
-    const mode = getMode();
-
     const badge = hud.querySelector("#tp_badge");
-    const modeBtn = hud.querySelector("#tp_modeBtn");
     const sub = hud.querySelector("#tp_sub");
     // const streetEl = hud.querySelector("#tp_street");
     const bar = hud.querySelector("#tp_bar");
@@ -1377,21 +1460,14 @@
     const beatsEl = hud.querySelector("#tp_beats");
     const confEl = hud.querySelector("#tp_conf");
 
-    const priceEl = hud.querySelector("#tp_price");
-    const potEl = hud.querySelector("#tp_pot");
-    const stackEl = hud.querySelector("#tp_stack");
-    const blindsEl = hud.querySelector("#tp_blinds");
-
     const advEl = hud.querySelector("#tp_advice");
     const whyEl = hud.querySelector("#tp_why");
+    const metaEl = hud.querySelector("#tp_meta");
     const risksEl = hud.querySelector("#tp_risks");
     const loseToEl = hud.querySelector("#tp_loseTo");
 
-    modeBtn.textContent = `Mode: ${mode.label}`;
-    modeBtn.title = mode.desc;
-
     if (!state) {
-      badge.textContent = "PMON v3.8";
+      badge.textContent = "PMON v3.9";
       sub.textContent = "Waiting…";
       // streetEl.textContent = "";
       bar.style.width = "0%";
@@ -1404,13 +1480,9 @@
       beatsEl.textContent = "Better hand than: …";
       confEl.textContent = "Confidence: …";
 
-      priceEl.textContent = "…";
-      potEl.textContent = "Pot: …";
-      stackEl.textContent = "Stack: …";
-      blindsEl.textContent = "Blinds: …";
-
       advEl.textContent = "…";
       whyEl.textContent = "";
+      metaEl.textContent = "";
       risksEl.textContent = "";
       loseToEl.textContent = "";
 
@@ -1427,7 +1499,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.8";
+    badge.textContent = "PMON v3.9";
     sub.textContent = state.titleLine || "…";
     // streetEl.textContent = state.street || "";
 
@@ -1451,15 +1523,12 @@
       confEl.textContent = state.eqConf ? `Confidence: ${state.eqConf}%` : "";
     }
 
-    const priceNeed = potOddsPct(state.pot || 0, state.toCall || 0);
-    if (state.toCall > 0) {
-      priceEl.textContent = `Need: ~${priceNeed}% (call ${fmtMoney(state.toCall)})`;
-    } else {
-      priceEl.textContent = "Need: 0% (free)";
-    }
-    potEl.textContent = `Pot: ${fmtMoney(state.pot || 0)}`;
-    stackEl.textContent = `Stack: ${state.stackText || "$?"}`;
-    blindsEl.textContent = `Blinds: ${state.sb ? fmtMoney(state.sb) : "$?"}/${state.bb ? fmtMoney(state.bb) : "$?"}`;
+    const needTxt = state.callUnknown
+      ? "Need: ?"
+      : (state.toCall > 0 ? `Need: ~${potOddsPct(state.pot || 0, state.toCall)}% (call ${fmtMoney(state.toCall)})` : "");
+    const stackTxt = state.stackText && state.stackText !== "$?" ? `Stack ${state.stackText}` : "";
+    const sprTxt = state.spr ? `SPR ${state.spr.toFixed(1)}` : "";
+    metaEl.textContent = [needTxt, stackTxt, sprTxt].filter(Boolean).join(" · ");
 
     advEl.classList.remove("good", "warn", "mute");
     const tone = state.rec?.tone || toneByWin(state.winPct);
@@ -1477,17 +1546,7 @@
   }
 
   /* ===================== MAIN LOOP ===================== */
-  function ensureModeSync() {
-    const m = getMode();
-    if (m.key !== _lastModeKey) {
-      _lastModeKey = m.key;
-      _lastKey = "";
-    }
-  }
-
   setInterval(() => {
-    ensureModeSync();
-
     const hero = getHeroCards();
     const board = getBoardCards();
 
@@ -1499,18 +1558,29 @@
     positionHud();
 
     const pot = findPot();
-    const toCall = findToCall();
+    const callInfo = findToCall();
     const blinds = findBlindsFromFeed();
     const opponents = getActiveOpponents(profiles);
     const oppCount = opponents.length || OPPONENTS;
     const heroStack = getHeroStack();
     const effStack = effectiveStack(heroStack, opponents);
+    let toCall = callInfo.amount || 0;
+    let callUnknown = !!callInfo.unknown;
+    if (callUnknown && callInfo.sawAllIn) {
+      if (effStack > 0) {
+        toCall = effStack;
+        callUnknown = false;
+      } else if (heroStack > 0) {
+        toCall = heroStack;
+        callUnknown = false;
+      }
+    }
     const spr = effStack > 0 && pot > 0 ? (effStack / pot) : 0;
     const callPctStack = heroStack > 0 && toCall > 0 ? (toCall / heroStack) : 0;
     const stackText = heroStack > 0
       ? `${fmtMoney(heroStack)}${effStack > 0 && effStack !== heroStack ? ` (eff ${fmtMoney(effStack)})` : ""}`
       : "$?";
-    const stackInfo = { heroStack, effStack, spr, callPctStack, opponents: oppCount };
+    const stackInfo = { heroStack, effStack, spr, callPctStack, opponents: oppCount, callUnknown };
 
     if (hero.length !== 2) {
       if (HUD.showWhenNoHero) {
@@ -1523,9 +1593,11 @@
           winPct: null,
           pot,
           toCall,
+          callUnknown,
           sb: blinds.sb,
           bb: blinds.bb,
           stackText,
+          spr,
           opponents: oppCount
         });
       } else {
@@ -1536,7 +1608,7 @@
     }
 
     const st = street(board.length);
-    const key = hero.map(c => c.txt).join("") + "|" + board.map(c => c.txt).join("") + "|" + getMode().key + "|" + pot + "|" + toCall + "|" + oppCount;
+    const key = hero.map(c => c.txt).join("") + "|" + board.map(c => c.txt).join("") + "|" + pot + "|" + toCall + "|" + oppCount;
 
     if (key === _lastKey) return;
     _lastKey = key;
@@ -1572,9 +1644,11 @@
         showWin: true,
         pot,
         toCall,
+        callUnknown,
         sb: blinds.sb,
         bb: blinds.bb,
         stackText,
+        spr,
         opponents: oppCount,
         rec: { act: preRec.act, why: preRec.why, tone: preRec.tone },
         risks: [],
@@ -1603,8 +1677,6 @@
     const subtitleBits = [];
     subtitleBits.push(pairInfo.text ? `${currentHit} · ${pairInfo.text}` : `${currentHit}`);
     if (board.length >= 3 && typeof eq.winPct === "number") subtitleBits.push(`Win ${eq.winPct}%`);
-    if (toCall > 0) subtitleBits.push(`Need ~${potOddsPct(pot, toCall)}%`);
-    if (spr > 0) subtitleBits.push(`SPR ${spr.toFixed(1)}`);
 
     let whyExtra = "";
     if (want && (st === "Flop" || st === "Turn")) {
@@ -1633,9 +1705,11 @@
 
       pot,
       toCall,
+      callUnknown,
       sb: blinds.sb,
       bb: blinds.bb,
       stackText,
+      spr,
 
       loseTo: eq.loseTo || [],
 
