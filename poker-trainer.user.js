@@ -1115,7 +1115,7 @@
       }
       #tp_holdem_hud .tp-badge{
         font-weight: 950;
-        font-size: ${HUD.titlePx}px;
+        font-size: ${Math.max(9, Math.round(HUD.titlePx * 0.2))}px;
         letter-spacing: 0.5px;
         padding: 4px 10px;
         border-radius: 999px;
