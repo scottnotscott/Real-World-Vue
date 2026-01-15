@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.2
+// @version      3.9.3
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -961,11 +961,16 @@
         bottom: auto !important;
         max-width: ${HUD.maxWidthVw}vw;
         width: ${HUD.maxWidthVw}vw;
+        transition: opacity 160ms ease;
         pointer-events: none;
         user-select: none;
         -webkit-user-select: none;
         font-family: system-ui, Segoe UI, Roboto, sans-serif;
         color: #fff;
+      }
+      #tp_holdem_hud.tp-hidden{
+        opacity: 0;
+        pointer-events: none;
       }
       #tp_holdem_hud .tp-wrap{
         pointer-events: auto; /* allow mode toggle */
@@ -1016,6 +1021,18 @@
         color: #fff;
         line-height: 1;
       }
+      #tp_holdem_hud .tp-hideBtn{
+        cursor: pointer;
+        font-weight: 900;
+        font-size: ${HUD.fontPx}px;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 1px solid rgba(255,255,255,0.2);
+        background: rgba(255,255,255,0.08);
+        color: #fff;
+        line-height: 1;
+      }
       #tp_holdem_hud .tp-street{
         font-weight: 950;
         opacity: 0.95;
@@ -1050,16 +1067,16 @@
       #tp_holdem_hud .tp-grid{
         margin-top: 8px;
         display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.2fr);
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
         gap: 8px;
         align-items: stretch;
+      }
+      #tp_holdem_hud .tp-card.tp-advice{
+        grid-column: 1 / -1;
       }
       @media (max-width: 420px){
         #tp_holdem_hud .tp-grid{
           grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-        }
-        #tp_holdem_hud .tp-card.tp-advice{
-          grid-column: 1 / -1;
         }
       }
 
@@ -1215,6 +1232,7 @@
         <div class="tp-head">
           <div class="tp-badge" id="tp_badge">TP</div>
           <div class="tp-sub" id="tp_sub">Loading…</div>
+          <button class="tp-hideBtn" id="tp_hide_btn" type="button" title="Hide (10s)">🗿</button>
           <button class="tp-helpBtn" id="tp_help_btn" type="button" title="Help">?</button>
         </div>
 
@@ -1230,8 +1248,6 @@
           <div class="tp-card">
             <h4>Chances</h4>
             <div class="tp-line" id="tp_win">Win: …</div>
-            <div class="tp-line tp-dim" id="tp_split">% of tie: …</div>
-            <div class="tp-line tp-dim" id="tp_beats">Better than: …</div>
             <div class="tp-line tp-dim" id="tp_conf">Confidence: …</div>
           </div>
 
@@ -1263,9 +1279,11 @@
     `;
     document.documentElement.appendChild(hud);
 
+    const hideBtn = hud.querySelector("#tp_hide_btn");
     const helpBtn = hud.querySelector("#tp_help_btn");
     const help = hud.querySelector("#tp_help");
     const helpClose = hud.querySelector("#tp_help_close");
+    let hideTimer = null;
 
     const setHelpOpen = (open) => {
       if (!help) return;
@@ -1286,6 +1304,18 @@
         e.preventDefault();
         e.stopPropagation();
         setHelpOpen(false);
+      }, { passive: false });
+    }
+    if (hideBtn) {
+      hideBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        hud.classList.add("tp-hidden");
+        if (hideTimer) clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => {
+          hud.classList.remove("tp-hidden");
+          hideTimer = null;
+        }, 10000);
       }, { passive: false });
     }
 
@@ -1330,9 +1360,9 @@
     const shortStack = (stackInfo?.spr || 0) > 0 && (stackInfo?.spr || 0) <= 2;
     const stackAdj = (stackInfo?.callPctStack || 0) >= 0.4 || shortStack ? 0.05 : 0;
     const multiAdj = oppCount >= 6 ? 0.1 : oppCount >= 4 ? 0.06 : oppCount >= 2 ? 0.03 : 0;
-    const openThresh = 0.62 + multiAdj + stackAdj;
-    const callThresh = 0.46 + multiAdj + stackAdj;
-    const shoveThresh = 0.78 + multiAdj;
+    const openThresh = 0.58 + multiAdj + stackAdj;
+    const callThresh = 0.42 + multiAdj + stackAdj;
+    const shoveThresh = 0.75 + multiAdj;
     const callUnknown = !!stackInfo?.callUnknown;
     const priceNeed = callUnknown ? 50 : potOddsPct(pot, toCall);
 
@@ -1495,8 +1525,6 @@
     const youEl = hud.querySelector("#tp_you");
 
     const winEl = hud.querySelector("#tp_win");
-    const splitEl = hud.querySelector("#tp_split");
-    const beatsEl = hud.querySelector("#tp_beats");
     const confEl = hud.querySelector("#tp_conf");
 
     const advEl = hud.querySelector("#tp_advice");
@@ -1506,7 +1534,7 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.2";
+      badge.textContent = "PMON v3.9.3";
       sub.textContent = "Waiting…";
       // streetEl.textContent = "";
       bar.style.width = "0%";
@@ -1515,8 +1543,6 @@
       youEl.textContent = "Your hand: ->";
 
       winEl.textContent = "Win: …";
-      splitEl.textContent = "Odds of splitting pot: …";
-      beatsEl.textContent = "Better hand than: …";
       confEl.textContent = "Confidence: …";
 
       advEl.textContent = "…";
@@ -1538,7 +1564,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.2";
+    badge.textContent = "PMON v3.9.3";
     sub.textContent = state.titleLine || "…";
     // streetEl.textContent = state.street || "";
 
@@ -1558,23 +1584,15 @@
     const showWin = !!state.showWin || state.boardLen >= 3;
     if (showWin && typeof state.winPct === "number") {
       winEl.textContent = `Win: ${state.winPct}%`;
-      setLine(splitEl, `Split: ${state.splitPct}%`);
-      const oppLabel = state.opponents ? state.opponents : "?";
-      setLine(beatsEl, `Beats: ~${state.beats}/${oppLabel}`);
       setLine(confEl, `Confidence: ${state.eqConf || 0}%`);
     } else {
       winEl.textContent = HUD.showPreflop ? "Win: will start after flop" : "Win: …";
-      setLine(splitEl, "");
-      setLine(beatsEl, "");
       setLine(confEl, state.eqConf ? `Confidence: ${state.eqConf}%` : "");
     }
 
-    const needTxt = state.callUnknown
-      ? "Need: ?"
-      : (state.toCall > 0 ? `Need: ~${potOddsPct(state.pot || 0, state.toCall)}% (call ${fmtMoney(state.toCall)})` : "");
     const stackTxt = state.stackText && state.stackText !== "$?" ? `Stack ${state.stackText}` : "";
     const sprTxt = state.spr ? `SPR ${state.spr.toFixed(1)}` : "";
-    setLine(metaEl, [needTxt, stackTxt, sprTxt].filter(Boolean).join(" · "));
+    setLine(metaEl, [stackTxt, sprTxt].filter(Boolean).join(" · "));
 
     advEl.classList.remove("good", "warn", "mute");
     const tone = state.rec?.tone || toneByWin(state.winPct);
@@ -1612,6 +1630,10 @@
     const effStack = effectiveStack(heroStack, opponents);
     let toCall = callInfo.amount || 0;
     let callUnknown = !!callInfo.unknown;
+    if (callInfo.sawCheck && callInfo.amount <= 0 && !callInfo.sawCall && !callInfo.sawAllIn) {
+      toCall = 0;
+      callUnknown = false;
+    }
     if (callUnknown && callInfo.sawAllIn) {
       if (effStack > 0) {
         toCall = effStack;
