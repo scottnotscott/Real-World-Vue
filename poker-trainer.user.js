@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.1
+// @version      3.9.2
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -1058,6 +1058,9 @@
         #tp_holdem_hud .tp-grid{
           grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
         }
+        #tp_holdem_hud .tp-card.tp-advice{
+          grid-column: 1 / -1;
+        }
       }
 
       #tp_holdem_hud .tp-card{
@@ -1143,9 +1146,36 @@
         overflow-wrap: anywhere;
       }
       #tp_holdem_hud .tp-card.tp-advice .tp-advice{
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,0.14);
+        background: linear-gradient(90deg, rgba(255,255,255,0.12), rgba(255,255,255,0.02));
         font-weight: 950;
         letter-spacing: 0.2px;
         text-shadow: 0 0 12px rgba(255,255,255,0.18), 0 1px 2px rgba(0,0,0,0.85);
+      }
+      #tp_holdem_hud .tp-card.tp-advice .tp-advice.good{
+        border-color: rgba(46,194,126,0.55);
+        color: #eafff2;
+        background: linear-gradient(90deg, rgba(46,194,126,0.38), rgba(46,194,126,0.08));
+      }
+      #tp_holdem_hud .tp-card.tp-advice .tp-advice.warn{
+        border-color: rgba(255,93,93,0.6);
+        color: #ffe6e6;
+        background: linear-gradient(90deg, rgba(255,93,93,0.4), rgba(255,93,93,0.08));
+      }
+      #tp_holdem_hud .tp-card.tp-advice .tp-advice.mute{
+        border-color: rgba(255,255,255,0.16);
+        color: #f0f0f0;
+        background: linear-gradient(90deg, rgba(255,255,255,0.18), rgba(255,255,255,0.03));
+      }
+      #tp_holdem_hud .tp-risk{
+        color: #ffbdbd;
+      }
+      #tp_holdem_hud .tp-lose{
+        color: #ffc7c7;
       }
 
       /* Glow/pulse on strong hits */
@@ -1210,8 +1240,8 @@
             <div class="tp-line tp-advice" id="tp_advice">…</div>
             <div class="tp-line tp-dim" id="tp_why">…</div>
             <div class="tp-line tp-dim" id="tp_meta">…</div>
-            <div class="tp-line tp-dim" id="tp_risks">…</div>
-            <div class="tp-line tp-dim" id="tp_loseTo">…</div>
+            <div class="tp-line tp-dim tp-risk" id="tp_risks">…</div>
+            <div class="tp-line tp-dim tp-lose" id="tp_loseTo">…</div>
           </div>
         </div>
 
@@ -1368,6 +1398,15 @@
     if (oppCount >= 3 && adjustedCat < 4) callThresh += 4;
     if (callPctStack >= 0.5 && adjustedCat < 4) callThresh += 8;
     if (spr > 0 && spr <= 2 && adjustedCat < 3) callThresh += 6;
+
+    const canLoosen = !callUnknown && callPctStack < 0.35 && (spr === 0 || spr >= 2);
+    if (canLoosen) {
+      let loosen = 0;
+      if (riskCount === 0) loosen = 4;
+      else if (riskCount === 1) loosen = 2;
+      if (loosen && oppCount <= 2) callThresh -= loosen;
+      else if (loosen && oppCount === 3) callThresh -= Math.max(1, Math.floor(loosen / 2));
+    }
     callThresh = clamp(callThresh, 0, 95);
     const bluffBase = priceNeed ?? 50;
     const bluffThresh = Math.max(0, Math.min(100, bluffBase + Math.round(mode.bluffEdge * 100)));
@@ -1467,7 +1506,7 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9";
+      badge.textContent = "PMON v3.9.2";
       sub.textContent = "Waiting…";
       // streetEl.textContent = "";
       bar.style.width = "0%";
@@ -1499,7 +1538,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9";
+    badge.textContent = "PMON v3.9.2";
     sub.textContent = state.titleLine || "…";
     // streetEl.textContent = state.street || "";
 
@@ -1509,18 +1548,25 @@
     hitEl.textContent = state.hitLabel || state.currentHit || "…";
     youEl.textContent = `Your hand: ${state.heroText || "N/A"}`;
 
+    const setLine = (el, text) => {
+      if (!el) return;
+      const t = String(text || "");
+      el.textContent = t;
+      el.style.display = t ? "" : "none";
+    };
+
     const showWin = !!state.showWin || state.boardLen >= 3;
     if (showWin && typeof state.winPct === "number") {
       winEl.textContent = `Win: ${state.winPct}%`;
-      splitEl.textContent = `Split: ${state.splitPct}%`;
+      setLine(splitEl, `Split: ${state.splitPct}%`);
       const oppLabel = state.opponents ? state.opponents : "?";
-      beatsEl.textContent = `Beats: ~${state.beats}/${oppLabel}`;
-      confEl.textContent = `Confidence: ${state.eqConf || 0}%`;
+      setLine(beatsEl, `Beats: ~${state.beats}/${oppLabel}`);
+      setLine(confEl, `Confidence: ${state.eqConf || 0}%`);
     } else {
       winEl.textContent = HUD.showPreflop ? "Win: will start after flop" : "Win: …";
-      splitEl.textContent = "";
-      beatsEl.textContent = "";
-      confEl.textContent = state.eqConf ? `Confidence: ${state.eqConf}%` : "";
+      setLine(splitEl, "");
+      setLine(beatsEl, "");
+      setLine(confEl, state.eqConf ? `Confidence: ${state.eqConf}%` : "");
     }
 
     const needTxt = state.callUnknown
@@ -1528,19 +1574,19 @@
       : (state.toCall > 0 ? `Need: ~${potOddsPct(state.pot || 0, state.toCall)}% (call ${fmtMoney(state.toCall)})` : "");
     const stackTxt = state.stackText && state.stackText !== "$?" ? `Stack ${state.stackText}` : "";
     const sprTxt = state.spr ? `SPR ${state.spr.toFixed(1)}` : "";
-    metaEl.textContent = [needTxt, stackTxt, sprTxt].filter(Boolean).join(" · ");
+    setLine(metaEl, [needTxt, stackTxt, sprTxt].filter(Boolean).join(" · "));
 
     advEl.classList.remove("good", "warn", "mute");
     const tone = state.rec?.tone || toneByWin(state.winPct);
     advEl.classList.add(tone === "good" ? "good" : tone === "warn" ? "warn" : "mute");
     advEl.textContent = state.rec ? state.rec.act : "…";
-    whyEl.textContent = state.rec ? state.rec.why : "";
+    setLine(whyEl, state.rec ? state.rec.why : "");
 
     const risksTxt = (state.risks && state.risks.length) ? `Board: ${state.risks.join(" · ")}` : "";
-    risksEl.textContent = risksTxt;
+    setLine(risksEl, risksTxt);
 
     const loseToTxt = (state.loseTo && state.loseTo.length) ? `Lose to: ${state.loseTo.join(" · ")}` : "";
-    loseToEl.textContent = loseToTxt;
+    setLine(loseToEl, loseToTxt);
 
     _lastRenderedState = state;
   }
