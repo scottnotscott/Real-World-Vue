@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.3
+// @version      3.9.4
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -15,9 +15,13 @@
   const ITERS = 850;
   const DIST_ITERS = 2400;
   const PRE_ITERS = 480;
+  const BANKROLL_RESERVED = 170000000;
+  const CHEAP_STACK_RATIO = 0.03;
+  const CHEAP_BANKROLL_RATIO = 0.002;
 
   const LS_PROFILES = "tpda_poker_profiles_v1";
   const LS_SEENFEED = "tpda_poker_feedseen_v1";
+  const LS_STATS = "tpda_poker_stats_v1";
   const PROFILE_MAX_RECENT = 40;
 
   const BLURT_TTL_MS = 12000;
@@ -664,6 +668,53 @@
     return MODE;
   }
 
+  function loadStats() {
+    return loadLS(LS_STATS, {
+      handsPlayed: 0,
+      handsFolded: 0,
+      handsWon: 0,
+      handsLost: 0,
+      vpip: 0,
+      pfr: 0,
+      bets: 0,
+      raises: 0,
+      calls: 0,
+      checks: 0,
+      moneyWon: 0,
+      moneyLost: 0,
+      biggestWin: 0,
+      biggestLoss: 0,
+      lastUpdate: 0
+    });
+  }
+
+  function saveStats(stats) {
+    stats.lastUpdate = Date.now();
+    saveLS(LS_STATS, stats);
+  }
+
+  function resetStats() {
+    const blank = {
+      handsPlayed: 0,
+      handsFolded: 0,
+      handsWon: 0,
+      handsLost: 0,
+      vpip: 0,
+      pfr: 0,
+      bets: 0,
+      raises: 0,
+      calls: 0,
+      checks: 0,
+      moneyWon: 0,
+      moneyLost: 0,
+      biggestWin: 0,
+      biggestLoss: 0,
+      lastUpdate: Date.now()
+    };
+    saveLS(LS_STATS, blank);
+    return blank;
+  }
+
   /* ===================== FEED PARSING (seat reads unchanged) ===================== */
   function nodeText(el) { return el ? String(el.textContent || "").trim() : ""; }
   function normName(s) { return String(s || "").trim().toLowerCase().replace(/\s+/g, " "); }
@@ -706,6 +757,18 @@
     return (h >>> 0).toString(16);
   }
 
+  function getHeroNameNorm() {
+    const heroEl = getHeroSeatEl();
+    if (!heroEl) return "";
+    return normName(extractSeatName(heroEl));
+  }
+
+  function extractMoneyFromLine(line) {
+    const amounts = extractAmounts(line);
+    if (!amounts.length) return 0;
+    return Math.max(...amounts);
+  }
+
   function parseActionLine(line) {
     const s = String(line || "").trim();
 
@@ -732,8 +795,12 @@
     const m2 = s.match(/^(.+?)\s+raises\s+to\b/i);
     if (m2) return { type: "raise", name: m2[1].trim(), raw: s };
 
-    const m3 = s.match(/^(.+?)\s+(won|wins)\b/i);
-    if (m3) return { type: "won", name: m3[1].trim(), raw: s };
+    const m3 = s.match(/^(.+?)\s+(won|wins|collects|collected|lost|loses)\b/i);
+    if (m3) {
+      const act = m3[2].toLowerCase();
+      if (act === "lost" || act === "loses") return { type: "lost", name: m3[1].trim(), raw: s };
+      return { type: "won", name: m3[1].trim(), raw: s };
+    }
 
     return null;
   }
@@ -787,7 +854,7 @@
     return pr._blurts;
   }
 
-  function ingestActionFeed(profiles) {
+  function ingestActionFeed(profiles, heroNameNorm, stats, handState) {
     const nameToSeat = buildNameToSeatMap();
     const raw = getActionFeedText();
     const lines = normalizeFeedLines(raw);
@@ -849,6 +916,59 @@
       }
 
       if (evt.type === "won") { pr.wins++; pushRecent(pr, { a: "won", st: pr._street || "Pre" }); }
+
+      if (heroNameNorm && nm === heroNameNorm && stats && handState) {
+        const lineText = String(line || "");
+        const money = extractMoneyFromLine(lineText);
+        if (evt.type === "bet") {
+          stats.bets++;
+          if (!handState.vpip) { stats.vpip++; handState.vpip = true; }
+        }
+        if (evt.type === "raise") {
+          stats.raises++;
+          if (!handState.vpip) { stats.vpip++; handState.vpip = true; }
+          if ((pr._street || "Pre") === "Pre" && !handState.pfr) { stats.pfr++; handState.pfr = true; }
+        }
+        if (evt.type === "call") {
+          stats.calls++;
+          if (!handState.vpip) { stats.vpip++; handState.vpip = true; }
+        }
+        if (evt.type === "check") stats.checks++;
+        if (evt.type === "fold") {
+          if (!handState.folded) {
+            stats.handsFolded++;
+            handState.folded = true;
+          }
+        }
+        if (evt.type === "won") {
+          if (!handState.won) {
+            stats.handsWon++;
+            handState.won = true;
+          }
+        }
+        if (evt.type === "lost") {
+          if (!handState.lost) {
+            stats.handsLost++;
+            handState.lost = true;
+          }
+        }
+        if (/(won|wins|collects|collected)/i.test(lineText) && money > 0) {
+          stats.moneyWon = (stats.moneyWon || 0) + money;
+          stats.biggestWin = Math.max(stats.biggestWin || 0, money);
+          if (!handState.won) {
+            stats.handsWon++;
+            handState.won = true;
+          }
+        }
+        if (/(lost|loses)/i.test(lineText) && money > 0) {
+          stats.moneyLost = (stats.moneyLost || 0) + money;
+          stats.biggestLoss = Math.max(stats.biggestLoss || 0, money);
+          if (!handState.lost) {
+            stats.handsLost++;
+            handState.lost = true;
+          }
+        }
+      }
     }
 
     saveLS(LS_SEENFEED, seen);
@@ -946,6 +1066,7 @@
   let _lastHitCat = -1;
   let _lastKey = "";
   let _preflopCache = { key: "", eq: null, iters: 0 };
+  let _handState = { key: "", vpip: false, pfr: false, folded: false, won: false, lost: false };
 
   function ensureHudStyle() {
     if (document.getElementById("tp-hud-style")) return;
@@ -974,9 +1095,12 @@
       }
       #tp_holdem_hud .tp-wrap{
         pointer-events: auto; /* allow mode toggle */
-        background: rgba(10,10,12,0.80);
-        border: 1px solid rgba(255,255,255,0.14);
-        box-shadow: 0 10px 20px rgba(0,0,0,0.42);
+        background:
+          radial-gradient(circle at 20% 20%, rgba(28,110,72,0.25), transparent 55%),
+          radial-gradient(circle at 80% 80%, rgba(120,70,20,0.22), transparent 60%),
+          linear-gradient(135deg, rgba(16,18,20,0.92), rgba(8,9,11,0.88));
+        border: 1px solid rgba(255,214,120,0.22);
+        box-shadow: 0 10px 20px rgba(0,0,0,0.42), inset 0 0 0 1px rgba(255,255,255,0.04);
         border-radius: 16px;
         padding: ${HUD.padY}px ${HUD.padX}px;
         backdrop-filter: blur(5px);
@@ -995,8 +1119,8 @@
         letter-spacing: 0.5px;
         padding: 4px 10px;
         border-radius: 999px;
-        border: 1px solid rgba(255,255,255,0.18);
-        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,214,120,0.35);
+        background: linear-gradient(90deg, rgba(255,214,120,0.2), rgba(255,214,120,0.06));
         text-shadow: 0 1px 2px rgba(0,0,0,0.85);
         white-space: nowrap;
       }
@@ -1010,6 +1134,19 @@
         text-overflow: ellipsis;
       }
       #tp_holdem_hud .tp-helpBtn{
+        cursor: pointer;
+        font-weight: 900;
+        font-size: ${HUD.fontPx}px;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 1px solid rgba(255,255,255,0.2);
+        background: rgba(255,255,255,0.08);
+        color: #fff;
+        line-height: 1;
+      }
+      #tp_holdem_hud .tp-clipBtn,
+      #tp_holdem_hud .tp-statsBtn{
         cursor: pointer;
         font-weight: 900;
         font-size: ${HUD.fontPx}px;
@@ -1126,6 +1263,10 @@
         display: none;
         box-shadow: 0 12px 26px rgba(0,0,0,0.55);
       }
+      #tp_holdem_hud .tp-stats{
+        right: auto;
+        left: 10px;
+      }
       #tp_holdem_hud .tp-help.is-open{ display: block; }
       #tp_holdem_hud .tp-helpHead{
         display:flex;
@@ -1233,6 +1374,8 @@
           <div class="tp-badge" id="tp_badge">TP</div>
           <div class="tp-sub" id="tp_sub">Loading…</div>
           <button class="tp-hideBtn" id="tp_hide_btn" type="button" title="Hide (10s)">🗿</button>
+          <button class="tp-clipBtn" id="tp_clip_btn" type="button" title="Copy page scan">📋</button>
+          <button class="tp-statsBtn" id="tp_stats_btn" type="button" title="Stats">📈</button>
           <button class="tp-helpBtn" id="tp_help_btn" type="button" title="Help">?</button>
         </div>
 
@@ -1271,8 +1414,29 @@
             <div class="tp-helpItem"><span class="tp-helpTerm">Shove</span>: Go all-in.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Need%</span>: Minimum win % to call profitably.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">SPR</span>: Stack-to-pot ratio (lower = pot is big vs stacks).</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Broadway</span>: A,K,Q,J,10 ranks.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Tight</span>: Plays fewer hands.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Loose</span>: Plays more hands.</div>
+          </div>
+        </div>
+        <div class="tp-help tp-stats" id="tp_stats" role="dialog" aria-hidden="true">
+          <div class="tp-helpHead">
+            <div>Session stats</div>
+            <button class="tp-helpClose" id="tp_stats_close" type="button" aria-label="Close">×</button>
+          </div>
+          <div class="tp-helpBody">
+            <div class="tp-helpItem"><span class="tp-helpTerm">Hands played</span>: <span id="tp_stat_hands">0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Hands scrapped</span>: <span id="tp_stat_folds">0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Hands won</span>: <span id="tp_stat_wins">0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Hands lost</span>: <span id="tp_stat_losses">0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">VPIP</span>: <span id="tp_stat_vpip">0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">PFR</span>: <span id="tp_stat_pfr">0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Money won</span>: <span id="tp_stat_money_won">$0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Money lost</span>: <span id="tp_stat_money_lost">$0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Biggest win</span>: <span id="tp_stat_big_win">$0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Biggest loss</span>: <span id="tp_stat_big_loss">$0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Net</span>: <span id="tp_stat_net">$0</span></div>
+            <button class="tp-helpClose" id="tp_stats_reset" type="button">Reset</button>
           </div>
         </div>
       </div>
@@ -1280,9 +1444,14 @@
     document.documentElement.appendChild(hud);
 
     const hideBtn = hud.querySelector("#tp_hide_btn");
+    const clipBtn = hud.querySelector("#tp_clip_btn");
+    const statsBtn = hud.querySelector("#tp_stats_btn");
     const helpBtn = hud.querySelector("#tp_help_btn");
     const help = hud.querySelector("#tp_help");
     const helpClose = hud.querySelector("#tp_help_close");
+    const statsPanel = hud.querySelector("#tp_stats");
+    const statsClose = hud.querySelector("#tp_stats_close");
+    const statsReset = hud.querySelector("#tp_stats_reset");
     let hideTimer = null;
 
     const setHelpOpen = (open) => {
@@ -1306,6 +1475,11 @@
         setHelpOpen(false);
       }, { passive: false });
     }
+    const setStatsOpen = (open) => {
+      if (!statsPanel) return;
+      statsPanel.classList.toggle("is-open", open);
+      statsPanel.setAttribute("aria-hidden", open ? "false" : "true");
+    };
     if (hideBtn) {
       hideBtn.addEventListener("click", (e) => {
         e.preventDefault();
@@ -1318,6 +1492,36 @@
         }, 10000);
       }, { passive: false });
     }
+    if (statsBtn) {
+      statsBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const isOpen = statsPanel && statsPanel.classList.contains("is-open");
+        setStatsOpen(!isOpen);
+      }, { passive: false });
+    }
+    if (statsClose) {
+      statsClose.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setStatsOpen(false);
+      }, { passive: false });
+    }
+    if (statsReset) {
+      statsReset.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const stats = resetStats();
+        updateStatsUi(stats);
+      }, { passive: false });
+    }
+    if (clipBtn) {
+      clipBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        copyDomScanToClipboard();
+      }, { passive: false });
+    }
 
     return hud;
   }
@@ -1328,6 +1532,80 @@
     hud.style.transform = "translateX(-50%)";
     hud.style.top = (HUD.topPx + HUD.navSafePx) + "px";
     hud.style.bottom = "auto";
+  }
+
+  function copyTextToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(() => { });
+      return;
+    }
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "readonly");
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch { }
+    document.body.removeChild(ta);
+  }
+
+  function collectDomSnapshot() {
+    const els = [...document.querySelectorAll("*")];
+    const data = {
+      ts: new Date().toISOString(),
+      url: location.href,
+      totalElements: els.length,
+      elements: els.map((el, idx) => {
+        const text = String(el.textContent || "").replace(/\s+/g, " ").trim();
+        const snippet = text.length > 80 ? text.slice(0, 77) + "..." : text;
+        const attrs = {};
+        if (el.attributes) {
+          for (const a of el.attributes) {
+            if (a && a.name && a.name.startsWith("data-")) attrs[a.name] = a.value;
+          }
+        }
+        const role = el.getAttribute ? el.getAttribute("role") : "";
+        const aria = el.getAttribute ? el.getAttribute("aria-label") : "";
+        return {
+          i: idx,
+          tag: el.tagName ? el.tagName.toLowerCase() : "",
+          id: el.id || "",
+          cls: typeof el.className === "string" ? el.className : "",
+          role: role || "",
+          aria: aria || "",
+          txt: snippet,
+          data: attrs
+        };
+      })
+    };
+    return JSON.stringify(data, null, 2);
+  }
+
+  function copyDomScanToClipboard() {
+    const payload = collectDomSnapshot();
+    copyTextToClipboard(payload);
+  }
+
+  function updateStatsUi(stats) {
+    const hud = document.getElementById("tp_holdem_hud");
+    if (!hud || !stats) return;
+    const set = (id, val) => {
+      const el = hud.querySelector(id);
+      if (el) el.textContent = val;
+    };
+    set("#tp_stat_hands", stats.handsPlayed || 0);
+    set("#tp_stat_folds", stats.handsFolded || 0);
+    set("#tp_stat_wins", stats.handsWon || 0);
+    set("#tp_stat_losses", stats.handsLost || 0);
+    set("#tp_stat_vpip", stats.vpip || 0);
+    set("#tp_stat_pfr", stats.pfr || 0);
+    set("#tp_stat_money_won", fmtMoney(stats.moneyWon || 0));
+    set("#tp_stat_money_lost", fmtMoney(stats.moneyLost || 0));
+    set("#tp_stat_big_win", fmtMoney(stats.biggestWin || 0));
+    set("#tp_stat_big_loss", fmtMoney(stats.biggestLoss || 0));
+    const net = (stats.moneyWon || 0) - (stats.moneyLost || 0);
+    set("#tp_stat_net", (net >= 0 ? "+" : "-") + fmtMoney(Math.abs(net)));
   }
 
   function toneByWin(winPct) {
@@ -1416,6 +1694,8 @@
     const callPctStack = stackInfo?.callPctStack || 0;
     const oppCount = stackInfo?.opponents || 0;
     const callUnknown = !!stackInfo?.callUnknown;
+    const bankroll = BANKROLL_RESERVED || 0;
+    const callPctBankroll = bankroll > 0 ? (toCall / bankroll) : 0;
 
     const improve =
       dist?.reachPct
@@ -1428,6 +1708,9 @@
     if (oppCount >= 3 && adjustedCat < 4) callThresh += 4;
     if (callPctStack >= 0.5 && adjustedCat < 4) callThresh += 8;
     if (spr > 0 && spr <= 2 && adjustedCat < 3) callThresh += 6;
+
+    const cheapCall = !callUnknown && (callPctStack <= CHEAP_STACK_RATIO || callPctBankroll <= CHEAP_BANKROLL_RATIO);
+    if (cheapCall && adjustedCat < 5) callThresh -= 6;
 
     const canLoosen = !callUnknown && callPctStack < 0.35 && (spr === 0 || spr >= 2);
     if (canLoosen) {
@@ -1497,6 +1780,10 @@
       return action("CALL", `Price OK. Need ~${priceNeed}%; you have ~${eq}%.`, "info");
     }
 
+    if (!isRiver && cheapCall && eq >= Math.max(30, callThresh - 6)) {
+      return action("CALL (SPECULATIVE)", "Cheap price for a shot.", "info");
+    }
+
     if (!isRiver && improve >= 35 && eq >= bluffThresh) {
       if (priceNeed == null) {
         return action(`CALL (DRAW)`, `Behind now, improve ~${improve}%. Price unknown.`, "info");
@@ -1534,7 +1821,7 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.3";
+      badge.textContent = "PMON v3.9.4";
       sub.textContent = "Waiting…";
       // streetEl.textContent = "";
       bar.style.width = "0%";
@@ -1564,7 +1851,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.3";
+    badge.textContent = "PMON v3.9.4";
     sub.textContent = state.titleLine || "…";
     // streetEl.textContent = state.street || "";
 
@@ -1590,9 +1877,7 @@
       setLine(confEl, state.eqConf ? `Confidence: ${state.eqConf}%` : "");
     }
 
-    const stackTxt = state.stackText && state.stackText !== "$?" ? `Stack ${state.stackText}` : "";
-    const sprTxt = state.spr ? `SPR ${state.spr.toFixed(1)}` : "";
-    setLine(metaEl, [stackTxt, sprTxt].filter(Boolean).join(" · "));
+    setLine(metaEl, "");
 
     advEl.classList.remove("good", "warn", "mute");
     const tone = state.rec?.tone || toneByWin(state.winPct);
@@ -1615,9 +1900,13 @@
     const board = getBoardCards();
 
     const profiles = loadLS(LS_PROFILES, {}) || {};
-    ingestActionFeed(profiles);
+    const stats = loadStats();
+    const heroNameNorm = getHeroNameNorm();
+    ingestActionFeed(profiles, heroNameNorm, stats, _handState);
     scoreProfiles(profiles);
     saveLS(LS_PROFILES, profiles);
+    saveStats(stats);
+    updateStatsUi(stats);
 
     positionHud();
 
@@ -1676,6 +1965,13 @@
     }
 
     const st = street(board.length);
+    const heroKey = hero.map(c => c.txt).join("");
+    if (board.length <= 1 && heroKey && heroKey !== _handState.key) {
+      _handState = { key: heroKey, vpip: false, pfr: false, folded: false, won: false, lost: false };
+      stats.handsPlayed = (stats.handsPlayed || 0) + 1;
+      saveStats(stats);
+      updateStatsUi(stats);
+    }
     const key = hero.map(c => c.txt).join("") + "|" + board.map(c => c.txt).join("") + "|" + pot + "|" + toCall + "|" + oppCount;
 
     if (key === _lastKey) return;
