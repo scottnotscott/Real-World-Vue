@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.7
+// @version      3.9.8
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -47,12 +47,122 @@
     // Readability
     fontPx: 11,
     titlePx: 13,
-    barHeightPx: 7,
+    barHeightPx: 14,
 
     // Show preflop summary
     showPreflop: true,
     showWhenNoHero: true
   };
+
+  const INSIGHT_SHOW_MS = 2600;
+  const INSIGHT_GAP_MS = 450;
+  const INSIGHT_DEDUPE_MS = 5000;
+
+  let _insightQueue = [];
+  let _insightActive = false;
+  let _insightEl = null;
+  let _insightTimer = null;
+  let _insightLast = { text: "", t: 0 };
+  let _insightBooted = false;
+
+  function setInsightEl(el) {
+    _insightEl = el || null;
+  }
+
+  function normalizeInsightTone(tone) {
+    const t = String(tone || "").toLowerCase();
+    if (t === "good" || t === "warn" || t === "info" || t === "mute" || t === "rainbow") return t;
+    return "mute";
+  }
+
+  function queueInsight(text, tone) {
+    const msg = String(text || "").trim();
+    if (!msg) return;
+    const now = Date.now();
+    if (_insightLast.text === msg && (now - _insightLast.t) < INSIGHT_DEDUPE_MS) return;
+    _insightLast = { text: msg, t: now };
+    _insightQueue.push({ text: msg, tone: normalizeInsightTone(tone) });
+    kickInsightLoop();
+  }
+
+  function kickInsightLoop() {
+    if (_insightActive) return;
+    if (!_insightEl) return;
+    showNextInsight();
+  }
+
+  function showNextInsight() {
+    if (!_insightEl) { _insightActive = false; return; }
+    const next = _insightQueue.shift();
+    if (!next) {
+      _insightActive = false;
+      _insightEl.classList.remove("show");
+      return;
+    }
+    _insightActive = true;
+    _insightEl.classList.remove("tone-mute", "tone-warn", "tone-mid", "tone-good", "rainbow", "tone-info");
+    if (next.tone === "rainbow") _insightEl.classList.add("rainbow");
+    else if (next.tone === "good") _insightEl.classList.add("tone-good");
+    else if (next.tone === "warn") _insightEl.classList.add("tone-warn");
+    else if (next.tone === "info") _insightEl.classList.add("tone-mid");
+    else _insightEl.classList.add("tone-mute");
+    _insightEl.textContent = next.text;
+    _insightEl.classList.remove("show");
+    void _insightEl.offsetWidth;
+    _insightEl.classList.add("show");
+    if (_insightTimer) clearTimeout(_insightTimer);
+    _insightTimer = setTimeout(() => {
+      if (_insightEl) _insightEl.classList.remove("show");
+      _insightTimer = setTimeout(showNextInsight, INSIGHT_GAP_MS);
+    }, INSIGHT_SHOW_MS);
+  }
+
+  function insightFromState(state, prev) {
+    if (!state || !state.rec) return null;
+    const act = String(state.rec.act || "");
+    const prevAct = String(prev?.rec?.act || "");
+    const toCall = state.toCall || 0;
+    const prevToCall = prev?.toCall || 0;
+    const win = typeof state.winPct === "number" ? state.winPct : null;
+
+    if (prev && act && prevAct && act !== prevAct) {
+      if (/^FOLD/i.test(act) && /(CHECK|CALL)/i.test(prevAct)) {
+        return { text: "Ah, raise alert. Fishing line snapped - fold time.", tone: "warn" };
+      }
+      if (/^RAISE/i.test(act) && /(CHECK|CALL)/i.test(prevAct)) {
+        return { text: "Momentum shift. Time to apply pressure.", tone: "good" };
+      }
+      if (/^CALL/i.test(act) && /^FOLD/i.test(prevAct)) {
+        return { text: "Price softened. You can take a peek.", tone: "info" };
+      }
+    }
+
+    if (state.callUnknown) {
+      return { text: "Price is fuzzy. Playing it cautious.", tone: "warn" };
+    }
+
+    if (prev && toCall > 0 && prevToCall > 0 && toCall > prevToCall * 1.5) {
+      return { text: "Raise spotted. Price jumped.", tone: "warn" };
+    }
+
+    if (!toCall && /^CHECK/i.test(act) && (state.boardLen || 0) >= 3 && typeof win === "number" && win < 45) {
+      return { text: "If they fire big, we may have to duck out.", tone: "mute" };
+    }
+
+    if (state.hitText && state.hitText.includes("BOARD") && !String(prev?.hitText || "").includes("BOARD")) {
+      return { text: "Board pair only. Nothing special yet.", tone: "mute" };
+    }
+
+    if (prev && (state.opponents || 0) >= 4 && (state.opponents || 0) > (prev.opponents || 0)) {
+      return { text: "Crowded pot. Tighten up.", tone: "warn" };
+    }
+
+    if (typeof win === "number" && win >= 80 && (!prev || (prev.winPct || 0) < 80)) {
+      return { text: "Rainbow time. This one feels good.", tone: "rainbow" };
+    }
+
+    return null;
+  }
 
   /* ===================== CARD PARSING ===================== */
   const R = { "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 11, "Q": 12, "K": 13, "A": 14 };
@@ -783,6 +893,13 @@
       return { type: "street", street: norm, raw: s };
     }
 
+    const mRaiseTo = s.match(/^(.+?)\s+rais(?:ed|es)\s+\$?([\d,]+)\s+to\s+\$?([\d,]+)/i);
+    if (mRaiseTo) {
+      return { type: "raise", name: mRaiseTo[1].trim(), raiseBy: toInt(mRaiseTo[2]), raiseTo: toInt(mRaiseTo[3]), raw: s };
+    }
+    const mRaise = s.match(/^(.+?)\s+rais(?:ed|es)\s+to\s+\$?([\d,]+)/i);
+    if (mRaise) return { type: "raise", name: mRaise[1].trim(), raiseTo: toInt(mRaise[2]), raw: s };
+
     const m1 = s.match(/^(.+?)\s+(bets|calls|checks|folds)\b/i);
     if (m1) {
       const name = m1[1].trim();
@@ -791,9 +908,6 @@
       if (act === "folds") return { type: "fold", name, raw: s };
       return { type: act === "bets" ? "bet" : "call", name, raw: s };
     }
-
-    const m2 = s.match(/^(.+?)\s+raises\s+to\b/i);
-    if (m2) return { type: "raise", name: m2[1].trim(), raw: s };
 
     const m3 = s.match(/^(.+?)\s+(won|wins|collects|collected|lost|loses)\b/i);
     if (m3) {
@@ -854,7 +968,7 @@
     return pr._blurts;
   }
 
-  function ingestActionFeed(profiles, heroNameNorm, stats, handState) {
+  function ingestActionFeed(profiles, heroNameNorm, stats, handState, blinds) {
     const nameToSeat = buildNameToSeatMap();
     const raw = getActionFeedText();
     const lines = normalizeFeedLines(raw);
@@ -898,6 +1012,18 @@
         pr._lastAggSeq = pr._actSeq;
         pr._lastAggStreet = pr._street || "Pre";
         pushRecent(pr, { a: "raise", st: pr._street || "Pre" });
+        const bb = blinds?.bb || 0;
+        const raiseTo = evt.raiseTo || 0;
+        if (bb > 0 && raiseTo > 0) {
+          const overPct = Math.round(((raiseTo - bb) / bb) * 100);
+          if (overPct >= 50) {
+            pr._bbRaiseCount = (pr._bbRaiseCount || 0) + 1;
+            if (pr._bbRaiseCount === 3 || pr._bbRaiseCount === 6 || pr._bbRaiseCount === 9) {
+              const nmLabel = pr.name || evt.name || "player";
+              queueInsight(`Noticed ${nmLabel} raised about ${overPct}% over the big blind a few times now (${pr._bbRaiseCount}).`, "info");
+            }
+          }
+        }
       }
       if (evt.type === "call") { pr.calls++; pushRecent(pr, { a: "call", st: pr._street || "Pre" }); }
       if (evt.type === "check") { pr.checks++; pushRecent(pr, { a: "check", st: pr._street || "Pre" }); }
@@ -1201,12 +1327,44 @@
         overflow: hidden;
         background: rgba(255,255,255,0.10);
         border: 1px solid rgba(255,255,255,0.12);
+        position: relative;
+        display: flex;
+        align-items: center;
       }
-      #tp_holdem_hud .tp-bar > div{
+      #tp_holdem_hud #tp_bar{
         height: 100%;
         width: 0%;
         background: rgba(255,255,255,0.60);
         transition: width 180ms ease;
+      }
+      #tp_holdem_hud .tp-insight{
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: ${Math.max(9, Math.round(HUD.fontPx * 0.85))}px;
+        font-weight: 700;
+        letter-spacing: 0.2px;
+        opacity: 0;
+        transition: opacity 260ms ease;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.65);
+        pointer-events: none;
+        padding: 0 8px;
+        text-align: center;
+      }
+      #tp_holdem_hud .tp-insight.show{ opacity: 1; }
+      #tp_holdem_hud .tp-insight.tone-mute{ color: #c9c9cf; }
+      #tp_holdem_hud .tp-insight.tone-warn{ color: #ff9a9a; }
+      #tp_holdem_hud .tp-insight.tone-mid{ color: #f4d777; }
+      #tp_holdem_hud .tp-insight.tone-good{ color: #9de58a; }
+      #tp_holdem_hud .tp-insight.rainbow{
+        background-image: linear-gradient(90deg, #ff5f6d, #ffc371, #f6ff00, #64ff6a, #52b7ff, #a855f7, #ff5fd7);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        -webkit-text-fill-color: transparent;
+        filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
       }
 
       /* ===== Layout FIXES =====
@@ -1377,7 +1535,10 @@
   function ensureHud() {
     ensureHudStyle();
     let hud = document.getElementById("tp_holdem_hud");
-    if (hud) return hud;
+    if (hud) {
+      setInsightEl(hud.querySelector("#tp_insight"));
+      return hud;
+    }
 
     hud = document.createElement("div");
     hud.id = "tp_holdem_hud";
@@ -1392,7 +1553,10 @@
           <button class="tp-helpBtn" id="tp_help_btn" type="button" title="Help">?</button>
         </div>
 
-        <div class="tp-bar"><div id="tp_bar"></div></div>
+        <div class="tp-bar">
+          <div id="tp_bar"></div>
+          <div class="tp-insight" id="tp_insight">cat5 says good luck</div>
+        </div>
 
         <div class="tp-grid">
           <div class="tp-card">
@@ -1455,6 +1619,12 @@
       </div>
     `;
     document.documentElement.appendChild(hud);
+
+    setInsightEl(hud.querySelector("#tp_insight"));
+    if (!_insightBooted) {
+      _insightBooted = true;
+      queueInsight("cat5 says good luck", "good");
+    }
 
     const hideBtn = hud.querySelector("#tp_hide_btn");
     const clipBtn = hud.querySelector("#tp_clip_btn");
@@ -1851,6 +2021,9 @@
   function renderHud(state) {
     const hud = ensureHud();
     positionHud();
+    const prevState = _lastRenderedState;
+    setInsightEl(hud.querySelector("#tp_insight"));
+    kickInsightLoop();
 
     const badge = hud.querySelector("#tp_badge");
     const sub = hud.querySelector("#tp_sub");
@@ -1870,7 +2043,7 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.7";
+      badge.textContent = "PMON v3.9.8";
       sub.textContent = "Waiting…";
       applySubTone(sub, null);
       // streetEl.textContent = "";
@@ -1904,7 +2077,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.7";
+    badge.textContent = "PMON v3.9.8";
     sub.textContent = state.titleLine || "…";
     applySubTone(sub, typeof state.winPct === "number" ? state.winPct : null);
     // streetEl.textContent = state.street || "";
@@ -1946,6 +2119,9 @@
     const loseToTxt = (state.loseTo && state.loseTo.length) ? `Lose to: ${state.loseTo.join(" · ")}` : "";
     setLine(loseToEl, loseToTxt);
 
+    const insight = insightFromState(state, prevState);
+    if (insight) queueInsight(insight.text, insight.tone);
+
     _lastRenderedState = state;
   }
 
@@ -1954,20 +2130,20 @@
     const hero = getHeroCards();
     const board = getBoardCards();
 
+    const pot = findPot();
+    const callInfo = findToCall();
+    const blinds = findBlindsFromFeed();
+
     const profiles = loadLS(LS_PROFILES, {}) || {};
     const stats = loadStats();
     const heroNameNorm = getHeroNameNorm();
-    ingestActionFeed(profiles, heroNameNorm, stats, _handState);
+    ingestActionFeed(profiles, heroNameNorm, stats, _handState, blinds);
     scoreProfiles(profiles);
     saveLS(LS_PROFILES, profiles);
     saveStats(stats);
     updateStatsUi(stats);
 
     positionHud();
-
-    const pot = findPot();
-    const callInfo = findToCall();
-    const blinds = findBlindsFromFeed();
     const opponents = getActiveOpponents(profiles);
     const oppCount = opponents.length || OPPONENTS;
     const heroStack = getHeroStack();
