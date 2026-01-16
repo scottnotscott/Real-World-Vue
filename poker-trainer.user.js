@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.9
+// @version      3.9.10
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -11,7 +11,7 @@
   "use strict";
 
   /* ===================== CONFIG ===================== */
-  const OPPONENTS = 1;
+  const OPPONENTS = 8;
   const ITERS = 850;
   const DIST_ITERS = 2400;
   const PRE_ITERS = 480;
@@ -813,12 +813,14 @@
     const tip = el.getAttribute ? el.getAttribute("data-tip") : "";
     const tooltip = el.getAttribute ? el.getAttribute("data-tooltip") : "";
     const orig = el.getAttribute ? el.getAttribute("data-original-title") : "";
+    const dataLabel = el.getAttribute ? el.getAttribute("data-label") : "";
+    const dataAction = el.getAttribute ? el.getAttribute("data-action") : "";
     const dataAmount = el.getAttribute ? el.getAttribute("data-amount") : "";
     const dataValue = el.getAttribute ? el.getAttribute("data-value") : "";
     const dataBet = el.getAttribute ? el.getAttribute("data-bet") : "";
     const dataCall = el.getAttribute ? el.getAttribute("data-call") : "";
     const maybeNum = (v) => (v && /^\d[\d,]*$/.test(v) ? `$${v}` : v);
-    return [t, a, title, tip, tooltip, orig, maybeNum(dataAmount), maybeNum(dataValue), maybeNum(dataBet), maybeNum(dataCall)].filter(Boolean);
+    return [t, a, title, tip, tooltip, orig, dataLabel, dataAction, maybeNum(dataAmount), maybeNum(dataValue), maybeNum(dataBet), maybeNum(dataCall)].filter(Boolean);
   }
 
   function isVisibleActionEl(el) {
@@ -832,17 +834,31 @@
   }
 
   function findToCall() {
-    let actionRoot = document.querySelector(
-      "div[class*='actionButtons'], div[class*='actions'], div[class*='actionBar'], div[id*='action']"
-    );
+    const actionTextRe = /\b(Check|Call|Raise|Bet|Fold|All\s*In)\b/i;
+    const rootCandidates = [
+      ...document.querySelectorAll(
+        "div[class*='buttonsWrap'], div[class*='panelPositioner'], div[class*='betPanel'], div[class*='actionButtons'], div[class*='actions'], div[class*='actionBar'], div[id*='action']"
+      )
+    ];
+    let actionRoot = rootCandidates.find(el => actionTextRe.test(nodeText(el)));
     let btns = [
       ...(actionRoot || document).querySelectorAll("button, [role='button'], a, input[type='button'], input[type='submit']")
-    ].filter(isVisibleActionEl).slice(0, 300);
+    ]
+      .filter(isVisibleActionEl)
+      .filter(el => {
+        const texts = getElementTextVariants(el);
+        return texts.some(t => actionTextRe.test(String(t || "")));
+      });
     if (!btns.length && actionRoot) {
       actionRoot = null;
       btns = [
         ...document.querySelectorAll("button, [role='button'], a, input[type='button'], input[type='submit']")
-      ].filter(isVisibleActionEl).slice(0, 300);
+      ]
+        .filter(isVisibleActionEl)
+        .filter(el => {
+          const texts = getElementTextVariants(el);
+          return texts.some(t => actionTextRe.test(String(t || "")));
+        });
     }
 
     let sawCheck = false;
@@ -2285,7 +2301,7 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.9";
+      badge.textContent = "PMON v3.9.10";
       sub.textContent = "Waiting…";
       applySubTone(sub, null);
       // streetEl.textContent = "";
@@ -2319,7 +2335,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.9";
+    badge.textContent = "PMON v3.9.10";
     sub.textContent = state.titleLine || "…";
     applySubTone(sub, typeof state.winPct === "number" ? state.winPct : null);
     // streetEl.textContent = state.street || "";
@@ -2387,8 +2403,9 @@
 
     positionHud();
     const opponents = getActiveOpponents(profiles);
+    const oppCount = Math.max(1, Math.min(8, opponents.length || OPPONENTS));
     const aggBias = aggregateOpponentBias(opponents);
-    const simOppInfos = [{ bias: aggBias }];
+    const simOppInfos = Array.from({ length: oppCount }, () => ({ bias: aggBias }));
     const observer = observerSnapshot(opponents);
     const heroFolded = !!_handState.folded;
     const heroStack = getHeroStack();
@@ -2453,7 +2470,7 @@
       updateStatsUi(stats);
     }
     const oppSig = opponentSignature(opponents);
-    const key = hero.map(c => c.txt).join("") + "|" + board.map(c => c.txt).join("") + "|" + pot + "|" + toCall + "|" + oppSig;
+    const key = hero.map(c => c.txt).join("") + "|" + board.map(c => c.txt).join("") + "|" + pot + "|" + toCall + "|" + oppSig + "|" + oppCount;
 
     if (key === _lastKey) return;
     _lastKey = key;
@@ -2464,12 +2481,12 @@
       const hitLabel = excitementLabel(hitCat);
       const pairInfo = pairContext(hero, board);
       const hitText = hitSummary(hitCat, pairInfo);
-      const preKey = hero.map(c => c.txt).join("") + "|" + oppSig;
+      const preKey = hero.map(c => c.txt).join("") + "|" + oppSig + "|" + oppCount;
       let preEq = _preflopCache.key === preKey ? _preflopCache.eq : null;
       let preIters = _preflopCache.key === preKey ? _preflopCache.iters : 0;
       if (!preEq) {
-        preIters = PRE_ITERS;
-        preEq = simulateEquity(hero, [], 1, preIters, simOppInfos);
+        preIters = PRE_ITERS + Math.round(oppCount * 12);
+        preEq = simulateEquity(hero, [], oppCount, preIters, simOppInfos);
         _preflopCache = { key: preKey, eq: preEq, iters: preIters };
       }
       const eqConf = equityConfidence(preIters);
@@ -2510,7 +2527,7 @@
 
     const mode = getMode();
     const iters = board.length === 3 ? ITERS : board.length === 4 ? Math.round(ITERS * 1.25) : Math.round(ITERS * 1.5);
-    const eq = simulateEquity(hero, board, 1, iters, simOppInfos);
+    const eq = simulateEquity(hero, board, oppCount, iters, simOppInfos);
     const eqConf = equityConfidence(iters);
     const bestNow = bestHand(hero.concat(board));
     const currentHit = bestNow.name;
