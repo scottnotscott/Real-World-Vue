@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.10
+// @version      3.9.11
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -18,9 +18,6 @@
   const BANKROLL_RESERVED = 170000000;
   const CHEAP_STACK_RATIO = 0.03;
   const CHEAP_BANKROLL_RATIO = 0.002;
-  const OPPONENT_PRESSURE = 0.6;
-  const OPPONENT_WEIGHT = 0.8;
-  const OPPONENT_SMOOTH = 0.7;
 
   const LS_PROFILES = "tpda_poker_profiles_v1";
   const LS_SEENFEED = "tpda_poker_feedseen_v1";
@@ -145,7 +142,7 @@
       return { text: "Not your turn yet. Advice can swing.", tone: "mute" };
     }
 
-    if (state.callUnknown) {
+    if (state.callUnknown && (state.toCall || 0) > 0) {
       return { text: "Price is fuzzy. Playing it cautious.", tone: "warn" };
     }
 
@@ -712,8 +709,11 @@
   }
 
   function findToCall() {
+    const actionRoot = document.querySelector("div[class*='buttonsWrap'], div[class*='betPanel'], div[class*='betPanelPositioner']");
     const btns = [
-      ...document.querySelectorAll("button, [role='button'], a, div")
+      ...(actionRoot
+        ? actionRoot.querySelectorAll("button, [role='button'], a")
+        : document.querySelectorAll("button, [role='button'], a, div"))
     ].slice(0, 500);
 
     let sawCheck = false;
@@ -1193,6 +1193,24 @@
     return opponents;
   }
 
+  function aggregateOpponentBias(opponents) {
+    if (!Array.isArray(opponents) || !opponents.length) return null;
+    let tSum = 0;
+    let aSum = 0;
+    let n = 0;
+    for (const opp of opponents) {
+      const bias = opp?.bias || rangeBiasFromProfile(opp?.profile);
+      tSum += typeof bias?.tightness === "number" ? bias.tightness : 0.35;
+      aSum += typeof bias?.aggression === "number" ? bias.aggression : 0.35;
+      n += 1;
+    }
+    if (!n) return null;
+    return {
+      tightness: clamp(tSum / n, 0, 1),
+      aggression: clamp(aSum / n, 0, 1)
+    };
+  }
+
   function opponentSignature(opponents) {
     if (!Array.isArray(opponents) || !opponents.length) return "";
     return opponents
@@ -1216,26 +1234,6 @@
       if (opp.stack > 0) eff = Math.min(eff, opp.stack);
     }
     return eff;
-  }
-
-  let _oppSmooth = null;
-  let _oppSmoothKey = "";
-
-  function smoothOppCount(raw, handKey) {
-    const count = Math.max(1, Math.round(raw || 1));
-    if (handKey && handKey !== _oppSmoothKey) {
-      _oppSmoothKey = handKey;
-      _oppSmooth = count;
-      return count;
-    }
-    if (_oppSmooth == null) _oppSmooth = count;
-    else _oppSmooth = _oppSmooth * OPPONENT_SMOOTH + count * (1 - OPPONENT_SMOOTH);
-    return Math.max(1, Math.round(_oppSmooth));
-  }
-
-  function softenOppCount(count) {
-    const c = Math.max(1, Math.round(count || 1));
-    return Math.max(1, Math.round(1 + (c - 1) * OPPONENT_WEIGHT));
   }
 
   /* ===================== HUD (TOP OF VIEWPORT) ===================== */
@@ -1453,6 +1451,20 @@
         letter-spacing: 0.2px;
         opacity: 0.95;
       }
+      #tp_holdem_hud .tp-card.tp-hitCard{
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+      }
+      #tp_holdem_hud .tp-card.tp-hitCard h4{
+        display: none;
+      }
+      #tp_holdem_hud .tp-card.tp-hitCard #tp_hit{
+        width: 100%;
+        text-align: center;
+      }
 
       /* Default lines stay compact */
       #tp_holdem_hud .tp-line{
@@ -1483,6 +1495,8 @@
         padding: 8px 10px;
         display: none;
         box-shadow: 0 12px 26px rgba(0,0,0,0.55);
+        max-height: min(70vh, 520px);
+        overflow: hidden;
       }
       #tp_holdem_hud .tp-stats{
         right: auto;
@@ -1509,6 +1523,21 @@
         font-size: ${HUD.fontPx}px;
         line-height: 1.35;
         opacity: 0.92;
+        max-height: min(52vh, 420px);
+        overflow-y: auto;
+        padding-right: 6px;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255,255,255,0.35) transparent;
+      }
+      #tp_holdem_hud .tp-helpBody::-webkit-scrollbar{
+        width: 6px;
+      }
+      #tp_holdem_hud .tp-helpBody::-webkit-scrollbar-thumb{
+        background: rgba(255,255,255,0.25);
+        border-radius: 999px;
+      }
+      #tp_holdem_hud .tp-helpBody::-webkit-scrollbar-track{
+        background: transparent;
       }
       #tp_holdem_hud .tp-helpItem{ margin-top: 6px; }
       #tp_holdem_hud .tp-helpTerm{ font-weight: 900; }
@@ -1609,8 +1638,8 @@
         </div>
 
         <div class="tp-grid">
-          <div class="tp-card">
-            <h4>Hit</h4>
+          <div class="tp-card tp-hitCard">
+            <h4></h4>
             <div class="tp-line tp-big" id="tp_hit">…</div>
             <div class="tp-line tp-dim" id="tp_you"></div>
           </div>
@@ -1637,11 +1666,35 @@
             <button class="tp-helpClose" id="tp_help_close" type="button" aria-label="Close">×</button>
           </div>
           <div class="tp-helpBody">
+            <div class="tp-helpItem"><span class="tp-helpTerm">Check</span>: Pass the action for free.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Call</span>: Match the current bet.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Raise</span>: Increase the current bet.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Bet</span>: Put chips in when no bet exists.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Fold</span>: Give up the hand.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Shove</span>: Go all-in.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">All-in</span>: Commit all your chips.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Need%</span>: Minimum win % to call profitably.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Win%</span>: Estimated chance to win.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Confidence</span>: How stable the win estimate is.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Board</span>: Shared community cards.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Lose to</span>: Likely hands that beat you.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">VPIP</span>: % of hands you voluntarily put chips in preflop.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">PFR</span>: % of hands you raised preflop.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Broadway</span>: A,K,Q,J,10 ranks.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">High card</span>: No pair; highest card plays.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Pair</span>: Two cards of the same rank.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Two pair</span>: Two different pairs.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Trips</span>: Three cards of one rank.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Straight</span>: Five cards in sequence.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Flush</span>: Five cards of one suit.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Full house</span>: Trips plus a pair.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Quads</span>: Four cards of one rank.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Kicker</span>: Side card used to break ties.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Overpair</span>: Pocket pair above the board.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Underpair</span>: Pocket pair below the board.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Paired board</span>: Board has a pair.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Monotone</span>: Three same-suit cards on the flop.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Draw</span>: A hand that can improve later.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Tight</span>: Plays fewer hands.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Loose</span>: Plays more hands.</div>
           </div>
@@ -1658,8 +1711,8 @@
             <div class="tp-helpItem"><span class="tp-helpTerm">Hands lost</span>: <span id="tp_stat_losses">0</span></div>
             <div class="tp-helpItem"><span class="tp-helpTerm">VPIP</span>: <span id="tp_stat_vpip">0</span></div>
             <div class="tp-helpItem"><span class="tp-helpTerm">PFR</span>: <span id="tp_stat_pfr">0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Money won</span>: <span id="tp_stat_money_won">$0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Money lost</span>: <span id="tp_stat_money_lost">$0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Total money won</span>: <span id="tp_stat_money_won">$0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Total money lost</span>: <span id="tp_stat_money_lost">$0</span></div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Biggest win</span>: <span id="tp_stat_big_win">$0</span></div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Biggest loss</span>: <span id="tp_stat_big_loss">$0</span></div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Net</span>: <span id="tp_stat_net">$0</span></div>
@@ -1906,10 +1959,9 @@
     const strengthPct = Math.round(strength * 100);
     const shortStack = (stackInfo?.spr || 0) > 0 && (stackInfo?.spr || 0) <= 2;
     const stackAdj = (stackInfo?.callPctStack || 0) >= 0.4 || shortStack ? 0.05 : 0;
-    const multiAdj = (oppCount >= 6 ? 0.1 : oppCount >= 4 ? 0.06 : oppCount >= 2 ? 0.03 : 0) * OPPONENT_PRESSURE;
-    const openThresh = 0.58 + multiAdj + stackAdj;
-    const callThresh = 0.42 + multiAdj + stackAdj;
-    const shoveThresh = 0.75 + multiAdj;
+    const openThresh = 0.58 + stackAdj;
+    const callThresh = 0.42 + stackAdj;
+    const shoveThresh = 0.75;
     const callUnknown = !!stackInfo?.callUnknown;
     const priceNeed = callUnknown ? 50 : potOddsPct(pot, toCall);
 
@@ -1918,8 +1970,7 @@
     const pair = hero[0].rank === hero[1].rank;
     const premium = (pair && hi >= 11) || (hi >= 13 && lo >= 12);
 
-    const context = `${oppCount || "?"} opp`;
-    const baseWhy = `Preflop vs ${context}.`;
+    const baseWhy = "Preflop.";
 
     if (!toCall || toCall <= 0) {
       if (strength >= openThresh || premium) {
@@ -1961,7 +2012,6 @@
     const adjustedCat = (boardOnly && heroCat <= 3) ? Math.max(0, heroCat - 1) : heroCat;
     const spr = stackInfo?.spr || 0;
     const callPctStack = stackInfo?.callPctStack || 0;
-    const oppCount = stackInfo?.opponents || 0;
     const callUnknown = !!stackInfo?.callUnknown;
     const bankroll = BANKROLL_RESERVED || 0;
     const callPctBankroll = bankroll > 0 ? (toCall / bankroll) : 0;
@@ -1978,14 +2028,11 @@
 
     const priceNeed = callUnknown ? null : potOddsPct(pot, toCall);
 
-    const oppPressure = OPPONENT_PRESSURE;
     let callThresh = Math.max(0, Math.min(100, (priceNeed ?? 50) + Math.round(mode.callEdge * 100)));
-    if (oppCount >= 3 && adjustedCat < 4) callThresh += Math.round(4 * oppPressure);
     if (callPctStack >= 0.5 && adjustedCat < 4) callThresh += 8;
     if (spr > 0 && spr <= 2 && adjustedCat < 3) callThresh += 6;
     if (underpairCaution) {
-      const underpairPenalty = (riskCount >= 1 ? 6 : 4) + (oppCount >= 3 ? 4 : oppCount >= 2 ? 2 : 0);
-      callThresh += underpairPenalty;
+      callThresh += (riskCount >= 1 ? 6 : 4);
     }
     if (twoPair) callThresh -= hasDrawyBoard ? 2 : 6;
 
@@ -1997,8 +2044,7 @@
       let loosen = 0;
       if (riskCount === 0) loosen = 4;
       else if (riskCount === 1) loosen = 2;
-      if (loosen && oppCount <= 2) callThresh -= loosen;
-      else if (loosen && oppCount === 3) callThresh -= Math.max(1, Math.floor(loosen / 2));
+      if (loosen) callThresh -= loosen;
     }
     callThresh = clamp(callThresh, 0, 95);
     const bluffBase = priceNeed ?? 50;
@@ -2106,7 +2152,7 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.10";
+      badge.textContent = "PMON v3.9.11";
       sub.textContent = "Waiting…";
       applySubTone(sub, null);
       // streetEl.textContent = "";
@@ -2140,7 +2186,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.10";
+    badge.textContent = "PMON v3.9.11";
     sub.textContent = state.titleLine || "…";
     applySubTone(sub, typeof state.winPct === "number" ? state.winPct : null);
     // streetEl.textContent = state.street || "";
@@ -2212,9 +2258,9 @@
 
     positionHud();
     const opponents = getActiveOpponents(profiles);
-    const oppCountRaw = opponents.length || OPPONENTS;
-    const oppCountSmooth = smoothOppCount(oppCountRaw, heroKey);
-    const oppCount = softenOppCount(oppCountSmooth);
+    const oppCount = 1;
+    const aggBias = aggregateOpponentBias(opponents);
+    const simOppInfos = aggBias ? [{ bias: aggBias }] : null;
     const heroStack = getHeroStack();
     const effStack = effectiveStack(heroStack, opponents);
     let toCall = callInfo.amount || 0;
@@ -2242,8 +2288,6 @@
 
     if (hero.length !== 2) {
       _stableRec = null;
-      _oppSmooth = null;
-      _oppSmoothKey = "";
       if (HUD.showWhenNoHero) {
         renderHud({
           // street: street(board.length),
@@ -2293,8 +2337,8 @@
       let preEq = _preflopCache.key === preKey ? _preflopCache.eq : null;
       let preIters = _preflopCache.key === preKey ? _preflopCache.iters : 0;
       if (!preEq) {
-        preIters = PRE_ITERS + Math.round(oppCount * 12);
-        preEq = simulateEquity(hero, [], oppCount, preIters, opponents.length ? opponents : null);
+        preIters = PRE_ITERS;
+        preEq = simulateEquity(hero, [], oppCount, preIters, simOppInfos);
         _preflopCache = { key: preKey, eq: preEq, iters: preIters };
       }
       const eqConf = equityConfidence(preIters);
@@ -2332,7 +2376,7 @@
 
     const mode = getMode();
     const iters = board.length === 3 ? ITERS : board.length === 4 ? Math.round(ITERS * 1.25) : Math.round(ITERS * 1.5);
-    const eq = simulateEquity(hero, board, oppCount, iters, opponents.length ? opponents : null);
+    const eq = simulateEquity(hero, board, oppCount, iters, simOppInfos);
     const eqConf = equityConfidence(iters);
     const bestNow = bestHand(hero.concat(board));
     const currentHit = bestNow.name;
