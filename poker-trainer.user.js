@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.9
+// @version      3.9.10
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -18,6 +18,9 @@
   const BANKROLL_RESERVED = 170000000;
   const CHEAP_STACK_RATIO = 0.03;
   const CHEAP_BANKROLL_RATIO = 0.002;
+  const OPPONENT_PRESSURE = 0.6;
+  const OPPONENT_WEIGHT = 0.8;
+  const OPPONENT_SMOOTH = 0.7;
 
   const LS_PROFILES = "tpda_poker_profiles_v1";
   const LS_SEENFEED = "tpda_poker_feedseen_v1";
@@ -408,7 +411,8 @@
   function simulateEquity(hero, board, opps = OPPONENTS, it = ITERS, opponentInfos = null) {
     let win = 0, tie = 0, beatsSum = 0;
 
-    const oppCount = Array.isArray(opponentInfos) && opponentInfos.length ? opponentInfos.length : opps;
+    const infos = Array.isArray(opponentInfos) && opponentInfos.length ? opponentInfos : null;
+    const oppCount = Math.max(0, Math.round(opps || 0));
     if (oppCount <= 0) {
       return { winPct: 100, splitPct: 0, beatsAvg: 0, loseTo: [] };
     }
@@ -425,7 +429,7 @@
       let bestOpp = null;
       const oppHands = [];
       for (let j = 0; j < oppCount; j++) {
-        const info = opponentInfos && opponentInfos[j] ? opponentInfos[j] : null;
+        const info = infos ? infos[j % infos.length] : null;
         const bias = info?.bias || rangeBiasFromProfile(info?.profile);
         const o = drawWeightedHand(d, bias);
         const rHand = bestHand(o.concat(b));
@@ -568,7 +572,9 @@
   }
 
   function pairContext(hero, board) {
-    if (!hero || hero.length < 2) return { text: "", boardOnly: false, boardPaired: false };
+    if (!hero || hero.length < 2) {
+      return { text: "", boardOnly: false, boardPaired: false, pocketPair: false, underpair: false, overpair: false, madeTwoPair: false };
+    }
 
     const boardCounts = rankCounts(board);
     const boardRanks = Object.keys(boardCounts).map(Number);
@@ -583,6 +589,10 @@
     const heroPairsBoard = !!(boardCounts[h1] || boardCounts[h2]);
     const boardOnly = boardPaired && !pocketPair && !heroPairsBoard;
     const maxBoard = board.length ? Math.max(...board.map(c => c.rank)) : 0;
+    const underpair = !!(pocketPair && maxBoard > 0 && pocketPair < maxBoard);
+    const overpair = !!(pocketPair && maxBoard > 0 && pocketPair > maxBoard);
+    const baseInfo = { boardOnly, boardPaired, pocketPair: !!pocketPair, underpair, overpair, madeTwoPair: false };
+    const withInfo = (text, extra = {}) => ({ text, ...baseInfo, ...extra });
 
     if (boardOnly) {
       let text = "Board pair only";
@@ -590,40 +600,48 @@
       else if (boardTripsRank && boardPairRanks.length) text = "Board full house only";
       else if (boardTripsRank) text = "Board trips only";
       else if (boardPairRanks.length >= 2) text = "Board two pair only";
-      return { text, boardOnly, boardPaired };
+      return withInfo(text);
     }
 
     if (pocketPair) {
       const boardMatch = boardCounts[pocketPair] || 0;
-      if (boardMatch >= 2) return { text: `Quads (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired };
-      if (boardMatch === 1) return { text: `Set (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired };
-      if (boardTripsRank) return { text: `Full house (${R_INV[boardTripsRank]}s over ${R_INV[pocketPair]}s)`, boardOnly, boardPaired };
-      if (boardPairRanks.length) return { text: `Two pair (${R_INV[pocketPair]} + board)`, boardOnly, boardPaired };
-      if (pocketPair > maxBoard) return { text: `Overpair (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired };
-      if (pocketPair < maxBoard) return { text: `Underpair (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired };
-      return { text: `Pocket pair (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired };
+      if (boardMatch >= 2) return withInfo(`Quads (${R_INV[pocketPair]}${R_INV[pocketPair]})`);
+      if (boardMatch === 1) return withInfo(`Set (${R_INV[pocketPair]}${R_INV[pocketPair]})`);
+      if (boardTripsRank) return withInfo(`Full house (${R_INV[boardTripsRank]}s over ${R_INV[pocketPair]}s)`);
+      if (boardPairRanks.length) return withInfo(`Two pair (${R_INV[pocketPair]} + board)`, { madeTwoPair: true });
+      if (pocketPair > maxBoard) return withInfo(`Overpair (${R_INV[pocketPair]}${R_INV[pocketPair]})`);
+      if (pocketPair < maxBoard) return withInfo(`Underpair (${R_INV[pocketPair]}${R_INV[pocketPair]})`);
+      return withInfo(`Pocket pair (${R_INV[pocketPair]}${R_INV[pocketPair]})`);
     }
 
     if (heroPairsBoard) {
+      const h1On = boardCounts[h1] || 0;
+      const h2On = boardCounts[h2] || 0;
+      const heroTwoPair = h1On > 0 && h2On > 0 && h1 !== h2;
       const pairRank = boardCounts[h1] ? h1 : h2;
       const kicker = (h1 === pairRank) ? h2 : h1;
       const boardMatch = boardCounts[pairRank] || 0;
       if (boardMatch >= 2) {
-        if (boardMatch >= 3) return { text: `Quads (${R_INV[pairRank]})`, boardOnly, boardPaired };
-        return { text: `Trips (${R_INV[pairRank]})`, boardOnly, boardPaired };
+        if (boardMatch >= 3) return withInfo(`Quads (${R_INV[pairRank]})`);
+        return withInfo(`Trips (${R_INV[pairRank]})`);
       }
       if (boardTripsRank && boardTripsRank !== pairRank) {
-        return { text: `Full house (${R_INV[boardTripsRank]}s over ${R_INV[pairRank]}s)`, boardOnly, boardPaired };
+        return withInfo(`Full house (${R_INV[boardTripsRank]}s over ${R_INV[pairRank]}s)`);
       }
       if (boardPairRanks.length && !boardPairRanks.includes(pairRank)) {
-        return { text: `Two pair (${R_INV[pairRank]} + board)`, boardOnly, boardPaired };
+        return withInfo(`Two pair (${R_INV[pairRank]} + board)`, { madeTwoPair: true });
+      }
+      if (heroTwoPair) {
+        const hiPair = Math.max(h1, h2);
+        const loPair = Math.min(h1, h2);
+        return withInfo(`Two pair (${R_INV[hiPair]} & ${R_INV[loPair]})`, { madeTwoPair: true });
       }
       const pairedNote = boardPaired ? " on paired board" : "";
-      if (pairRank === maxBoard) return { text: `Top pair (k ${R_INV[kicker]})${pairedNote}`, boardOnly, boardPaired };
-      return { text: `Pair (${R_INV[pairRank]})${pairedNote}`, boardOnly, boardPaired };
+      if (pairRank === maxBoard) return withInfo(`Top pair (k ${R_INV[kicker]})${pairedNote}`);
+      return withInfo(`Pair (${R_INV[pairRank]})${pairedNote}`);
     }
 
-    return { text: "", boardOnly, boardPaired };
+    return withInfo("");
   }
 
   /* ===================== TABLE INFO (POT / TO CALL / BLINDS) ===================== */
@@ -1198,6 +1216,26 @@
       if (opp.stack > 0) eff = Math.min(eff, opp.stack);
     }
     return eff;
+  }
+
+  let _oppSmooth = null;
+  let _oppSmoothKey = "";
+
+  function smoothOppCount(raw, handKey) {
+    const count = Math.max(1, Math.round(raw || 1));
+    if (handKey && handKey !== _oppSmoothKey) {
+      _oppSmoothKey = handKey;
+      _oppSmooth = count;
+      return count;
+    }
+    if (_oppSmooth == null) _oppSmooth = count;
+    else _oppSmooth = _oppSmooth * OPPONENT_SMOOTH + count * (1 - OPPONENT_SMOOTH);
+    return Math.max(1, Math.round(_oppSmooth));
+  }
+
+  function softenOppCount(count) {
+    const c = Math.max(1, Math.round(count || 1));
+    return Math.max(1, Math.round(1 + (c - 1) * OPPONENT_WEIGHT));
   }
 
   /* ===================== HUD (TOP OF VIEWPORT) ===================== */
@@ -1868,7 +1906,7 @@
     const strengthPct = Math.round(strength * 100);
     const shortStack = (stackInfo?.spr || 0) > 0 && (stackInfo?.spr || 0) <= 2;
     const stackAdj = (stackInfo?.callPctStack || 0) >= 0.4 || shortStack ? 0.05 : 0;
-    const multiAdj = oppCount >= 6 ? 0.1 : oppCount >= 4 ? 0.06 : oppCount >= 2 ? 0.03 : 0;
+    const multiAdj = (oppCount >= 6 ? 0.1 : oppCount >= 4 ? 0.06 : oppCount >= 2 ? 0.03 : 0) * OPPONENT_PRESSURE;
     const openThresh = 0.58 + multiAdj + stackAdj;
     const callThresh = 0.42 + multiAdj + stackAdj;
     const shoveThresh = 0.75 + multiAdj;
@@ -1927,6 +1965,11 @@
     const callUnknown = !!stackInfo?.callUnknown;
     const bankroll = BANKROLL_RESERVED || 0;
     const callPctBankroll = bankroll > 0 ? (toCall / bankroll) : 0;
+    const underpair = !!pairInfo?.underpair;
+    const underpairCaution = underpair && adjustedCat <= 1;
+    const twoPair = adjustedCat === 2 && !boardOnly;
+    const isRiver = streetName === "River";
+    const hasDrawyBoard = risks && risks.some(r => r.includes("straight") || r.includes("Straight") || r.includes("flush") || r.includes("Flush"));
 
     const improve =
       dist?.reachPct
@@ -1935,15 +1978,21 @@
 
     const priceNeed = callUnknown ? null : potOddsPct(pot, toCall);
 
+    const oppPressure = OPPONENT_PRESSURE;
     let callThresh = Math.max(0, Math.min(100, (priceNeed ?? 50) + Math.round(mode.callEdge * 100)));
-    if (oppCount >= 3 && adjustedCat < 4) callThresh += 4;
+    if (oppCount >= 3 && adjustedCat < 4) callThresh += Math.round(4 * oppPressure);
     if (callPctStack >= 0.5 && adjustedCat < 4) callThresh += 8;
     if (spr > 0 && spr <= 2 && adjustedCat < 3) callThresh += 6;
+    if (underpairCaution) {
+      const underpairPenalty = (riskCount >= 1 ? 6 : 4) + (oppCount >= 3 ? 4 : oppCount >= 2 ? 2 : 0);
+      callThresh += underpairPenalty;
+    }
+    if (twoPair) callThresh -= hasDrawyBoard ? 2 : 6;
 
     const cheapCall = !callUnknown && (callPctStack <= CHEAP_STACK_RATIO || callPctBankroll <= CHEAP_BANKROLL_RATIO);
-    if (cheapCall && adjustedCat < 5) callThresh -= 6;
+    if (cheapCall && adjustedCat < 5 && !underpairCaution) callThresh -= 6;
 
-    const canLoosen = !callUnknown && callPctStack < 0.35 && (spr === 0 || spr >= 2);
+    const canLoosen = !callUnknown && callPctStack < 0.35 && (spr === 0 || spr >= 2) && !underpairCaution;
     if (canLoosen) {
       let loosen = 0;
       if (riskCount === 0) loosen = 4;
@@ -1955,8 +2004,6 @@
     const bluffBase = priceNeed ?? 50;
     const bluffThresh = Math.max(0, Math.min(100, bluffBase + Math.round(mode.bluffEdge * 100)));
 
-    const isRiver = streetName === "River";
-    const hasDrawyBoard = risks && risks.some(r => r.includes("straight") || r.includes("Straight") || r.includes("flush") || r.includes("Flush"));
     const monster = adjustedCat >= 6;
     const strong = adjustedCat >= 4;
     const medium = adjustedCat >= 2;
@@ -1966,7 +2013,7 @@
     const action = (act, why, tone) => ({ act, why: stackNote ? `${why} ${stackNote}` : why, tone });
     const heroStack = stackInfo?.heroStack || 0;
 
-    const sizeBucket = monster ? 2 : strong ? 1 : 0;
+    const sizeBucket = monster ? 2 : (strong || twoPair) ? 1 : 0;
     const betFrac = mode.betPot[sizeBucket];
     const raiseFrac = mode.raisePot[sizeBucket];
 
@@ -2011,7 +2058,7 @@
       return action("CALL", "Call is fine. Don't overthink it.", "info");
     }
 
-    if (!isRiver && cheapCall && eq >= Math.max(30, callThresh - 6)) {
+    if (!isRiver && cheapCall && eq >= Math.max(30, callThresh - 6) && !underpairCaution) {
       return action("CALL (SPECULATIVE)", "Cheap peek. Why not.", "info");
     }
 
@@ -2025,7 +2072,10 @@
     if (priceNeed == null) {
       return action("FOLD", "Price is unclear and this is thin. Easy fold.", "warn");
     }
-    return action("FOLD", "Too expensive for what you have. Save the chips.", "warn");
+    const foldWhy = underpairCaution
+      ? "Underpair tends to get crushed here. Save the chips."
+      : "Too expensive for what you have. Save the chips.";
+    return action("FOLD", foldWhy, "warn");
   }
 
   let _lastRenderedState = null;
@@ -2056,7 +2106,7 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.9";
+      badge.textContent = "PMON v3.9.10";
       sub.textContent = "Waiting…";
       applySubTone(sub, null);
       // streetEl.textContent = "";
@@ -2090,7 +2140,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.9";
+    badge.textContent = "PMON v3.9.10";
     sub.textContent = state.titleLine || "…";
     applySubTone(sub, typeof state.winPct === "number" ? state.winPct : null);
     // streetEl.textContent = state.street || "";
@@ -2145,6 +2195,7 @@
   setInterval(() => {
     const hero = getHeroCards();
     const board = getBoardCards();
+    const heroKey = hero.length === 2 ? hero.map(c => c.txt).join("") : "";
 
     const pot = findPot();
     const callInfo = findToCall();
@@ -2161,7 +2212,9 @@
 
     positionHud();
     const opponents = getActiveOpponents(profiles);
-    const oppCount = opponents.length || OPPONENTS;
+    const oppCountRaw = opponents.length || OPPONENTS;
+    const oppCountSmooth = smoothOppCount(oppCountRaw, heroKey);
+    const oppCount = softenOppCount(oppCountSmooth);
     const heroStack = getHeroStack();
     const effStack = effectiveStack(heroStack, opponents);
     let toCall = callInfo.amount || 0;
@@ -2189,6 +2242,8 @@
 
     if (hero.length !== 2) {
       _stableRec = null;
+      _oppSmooth = null;
+      _oppSmoothKey = "";
       if (HUD.showWhenNoHero) {
         renderHud({
           // street: street(board.length),
@@ -2215,7 +2270,6 @@
     }
 
     const st = street(board.length);
-    const heroKey = hero.map(c => c.txt).join("");
     if (board.length <= 1 && heroKey && heroKey !== _handState.key) {
       _handState = { key: heroKey, vpip: false, pfr: false, folded: false, won: false, lost: false };
       _stableRec = null;
@@ -2223,7 +2277,7 @@
       saveStats(stats);
       updateStatsUi(stats);
     }
-    const key = hero.map(c => c.txt).join("") + "|" + board.map(c => c.txt).join("") + "|" + pot + "|" + toCall + "|" + oppCount;
+    const key = heroKey + "|" + board.map(c => c.txt).join("") + "|" + pot + "|" + toCall + "|" + oppCount;
 
     if (key === _lastKey) return;
     _lastKey = key;
@@ -2235,7 +2289,7 @@
       const pairInfo = pairContext(hero, board);
       const hitText = hitSummary(hitCat, pairInfo);
       const oppSig = opponentSignature(opponents);
-      const preKey = hero.map(c => c.txt).join("") + "|" + oppCount + "|" + oppSig;
+      const preKey = heroKey + "|" + oppCount + "|" + oppSig;
       let preEq = _preflopCache.key === preKey ? _preflopCache.eq : null;
       let preIters = _preflopCache.key === preKey ? _preflopCache.iters : 0;
       if (!preEq) {
