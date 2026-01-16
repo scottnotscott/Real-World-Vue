@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.11
+// @version      3.9.12
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -1465,6 +1465,31 @@
         width: 100%;
         text-align: center;
       }
+      #tp_holdem_hud.tp-hit-1 .tp-card.tp-hitCard,
+      #tp_holdem_hud.tp-hit-2 .tp-card.tp-hitCard{
+        animation: tpHitPulse 1200ms ease-in-out infinite;
+      }
+      #tp_holdem_hud.tp-hit-3 .tp-card.tp-hitCard,
+      #tp_holdem_hud.tp-hit-4 .tp-card.tp-hitCard,
+      #tp_holdem_hud.tp-hit-5 .tp-card.tp-hitCard,
+      #tp_holdem_hud.tp-hit-6 .tp-card.tp-hitCard,
+      #tp_holdem_hud.tp-hit-7 .tp-card.tp-hitCard,
+      #tp_holdem_hud.tp-hit-8 .tp-card.tp-hitCard{
+        animation: tpHitPulseBig 900ms ease-in-out infinite;
+        box-shadow: 0 0 0 1px rgba(255,255,255,0.18), 0 0 14px rgba(255,255,255,0.18);
+      }
+      #tp_holdem_hud.tp-hit-3 #tp_hit,
+      #tp_holdem_hud.tp-hit-4 #tp_hit,
+      #tp_holdem_hud.tp-hit-5 #tp_hit,
+      #tp_holdem_hud.tp-hit-6 #tp_hit,
+      #tp_holdem_hud.tp-hit-7 #tp_hit,
+      #tp_holdem_hud.tp-hit-8 #tp_hit{
+        background-image: linear-gradient(90deg, #ff5f6d, #ffc371, #f6ff00, #64ff6a, #52b7ff, #a855f7, #ff5fd7);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        -webkit-text-fill-color: transparent;
+      }
 
       /* Default lines stay compact */
       #tp_holdem_hud .tp-line{
@@ -1603,6 +1628,16 @@
         0%{ transform: translateZ(0) scale(0.985); }
         55%{ transform: translateZ(0) scale(1.02); }
         100%{ transform: translateZ(0) scale(1.0); }
+      }
+      @keyframes tpHitPulse{
+        0%{ transform: translateZ(0) scale(1.0); box-shadow: 0 0 0 rgba(255,255,255,0.0); }
+        60%{ transform: translateZ(0) scale(1.03); box-shadow: 0 0 18px rgba(170,255,190,0.22); }
+        100%{ transform: translateZ(0) scale(1.0); box-shadow: 0 0 0 rgba(255,255,255,0.0); }
+      }
+      @keyframes tpHitPulseBig{
+        0%{ transform: translateZ(0) scale(1.0); box-shadow: 0 0 0 rgba(255,255,255,0.0); }
+        55%{ transform: translateZ(0) scale(1.06); box-shadow: 0 0 26px rgba(255,255,255,0.35); }
+        100%{ transform: translateZ(0) scale(1.0); box-shadow: 0 0 0 rgba(255,255,255,0.0); }
       }
 
       /* prevent HUD blocking page scroll */
@@ -2152,7 +2187,7 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.11";
+      badge.textContent = "PMON v3.9.12";
       sub.textContent = "Waiting…";
       applySubTone(sub, null);
       // streetEl.textContent = "";
@@ -2186,7 +2221,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.11";
+    badge.textContent = "PMON v3.9.12";
     sub.textContent = state.titleLine || "…";
     applySubTone(sub, typeof state.winPct === "number" ? state.winPct : null);
     // streetEl.textContent = state.street || "";
