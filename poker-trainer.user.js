@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.13
+// @version      3.9.8
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -57,10 +57,6 @@
   const INSIGHT_SHOW_MS = 2600;
   const INSIGHT_GAP_MS = 450;
   const INSIGHT_DEDUPE_MS = 5000;
-  const OBSERVER_COOLDOWN_MS = 3400;
-  const OBSERVER_GUESS_CHANCE = 0.22;
-  const OBSERVER_PATTERN_CHANCE = 0.3;
-  const OBSERVER_FILLER_CHANCE = 0.35;
 
   let _insightQueue = [];
   let _insightActive = false;
@@ -68,18 +64,6 @@
   let _insightTimer = null;
   let _insightLast = { text: "", t: 0 };
   let _insightBooted = false;
-  let _observerLastAt = 0;
-
-  const OBSERVER_FILLERS = [
-    "Spectator mode on. Chips are doing laps.",
-    "Dealer is just vibing.",
-    "This pot is simmering.",
-    "Someone is allergic to folding.",
-    "Check-check harmony is real.",
-    "That pause was pure drama.",
-    "The table is telling a story.",
-    "We are here for the plot."
-  ];
 
   function setInsightEl(el) {
     _insightEl = el || null;
@@ -89,76 +73,6 @@
     const t = String(tone || "").toLowerCase();
     if (t === "good" || t === "warn" || t === "info" || t === "mute" || t === "rainbow") return t;
     return "mute";
-  }
-
-  function prettyCatLabel(shortName) {
-    const key = String(shortName || "");
-    return CAT_LABELS[key] || key.toLowerCase();
-  }
-
-  function pickOne(list) {
-    if (!Array.isArray(list) || !list.length) return null;
-    return list[randInt(list.length)];
-  }
-
-  function observerInsightFromState(state, prev) {
-    if (!state?.heroFolded) return null;
-    const now = Date.now();
-    if (now - _observerLastAt < OBSERVER_COOLDOWN_MS) return null;
-
-    const lines = [];
-    if (prev && !prev.heroFolded) {
-      lines.push({ text: "Folded. Backseat mode on.", tone: "mute" });
-    }
-
-    if (prev && (state.boardLen || 0) > (prev.boardLen || 0)) {
-      const st = street(state.boardLen || 0);
-      if (st === "Flop") lines.push({ text: "Flop rolls out. The plot thickens.", tone: "info" });
-      else if (st === "Turn") lines.push({ text: "Turn card drops. Everyone pretends to be calm.", tone: "info" });
-      else if (st === "River") lines.push({ text: "River hits. Poker faces locked in.", tone: "info" });
-    }
-
-    if (prev && state.pot && prev.pot && state.pot > prev.pot * 1.6) {
-      lines.push({ text: "Pot just ballooned. Someone is swinging big.", tone: "warn" });
-    }
-
-    if (state.risks?.length && Math.random() < 0.4) {
-      const risk = String(state.risks[0] || "").toLowerCase();
-      lines.push({ text: `Board looks ${risk}.`, tone: "mute" });
-    }
-
-    if (state.observerAggName && state.observerAggScore >= 55 && Math.random() < OBSERVER_PATTERN_CHANCE) {
-      lines.push({ text: `${state.observerAggName} keeps applying pressure.`, tone: "info" });
-    }
-    if (state.observerBluffName && state.observerBluffScore >= 55 && Math.random() < OBSERVER_PATTERN_CHANCE) {
-      lines.push({ text: `${state.observerBluffName} is playing fearless.`, tone: "info" });
-    }
-
-    if ((state.boardLen || 0) >= 3 && Math.random() < OBSERVER_GUESS_CHANCE) {
-      const topLose = state.loseTo && state.loseTo.length ? String(state.loseTo[0] || "") : "";
-      if (topLose) {
-        const short = topLose.split(/\s+/)[0];
-        lines.push({ text: `My guess: someone has ${prettyCatLabel(short)}.`, tone: "info" });
-      } else if (state.risks?.some(r => /flush/i.test(r))) {
-        lines.push({ text: "Guessing a flush draw is out there.", tone: "info" });
-      } else if (state.risks?.some(r => /straight/i.test(r))) {
-        lines.push({ text: "Feels like a straight draw is lurking.", tone: "info" });
-      } else if (state.risks?.some(r => /paired board/i.test(r))) {
-        lines.push({ text: "Paired board. Someone likely paired it.", tone: "info" });
-      } else {
-        lines.push({ text: "My guess: a top pair is out there.", tone: "info" });
-      }
-    }
-
-    let pool = lines;
-    if (!pool.length || Math.random() < OBSERVER_FILLER_CHANCE) {
-      pool = pool.concat(OBSERVER_FILLERS.map(text => ({ text, tone: "mute" })));
-    }
-
-    const pick = pickOne(pool);
-    if (!pick) return null;
-    _observerLastAt = now;
-    return pick;
   }
 
   function queueInsight(text, tone) {
@@ -210,8 +124,6 @@
     const toCall = state.toCall || 0;
     const prevToCall = prev?.toCall || 0;
     const win = typeof state.winPct === "number" ? state.winPct : null;
-    const heroTurn = !!state.heroTurn;
-    const heroFolded = !!state.heroFolded;
 
     if (prev && act && prevAct && act !== prevAct) {
       if (/^FOLD/i.test(act) && /(CHECK|CALL)/i.test(prevAct)) {
@@ -225,11 +137,7 @@
       }
     }
 
-    if (!heroTurn && prev && act && prevAct && act !== prevAct) {
-      return { text: "Not your turn yet. Advice can swing.", tone: "mute" };
-    }
-
-    if (state.callUnknown && (state.toCall || 0) > 0) {
+    if (state.callUnknown) {
       return { text: "Price is fuzzy. Playing it cautious.", tone: "warn" };
     }
 
@@ -237,7 +145,7 @@
       return { text: "Raise spotted. Price jumped.", tone: "warn" };
     }
 
-    if (!heroTurn && !toCall && /^CHECK/i.test(act) && (state.boardLen || 0) >= 3 && typeof win === "number" && win < 45) {
+    if (!toCall && /^CHECK/i.test(act) && (state.boardLen || 0) >= 3 && typeof win === "number" && win < 45) {
       return { text: "If they fire big, we may have to duck out.", tone: "mute" };
     }
 
@@ -245,17 +153,12 @@
       return { text: "Board pair only. Nothing special yet.", tone: "mute" };
     }
 
-    if (heroTurn && (state.boardLen || 0) >= 3 && (state.callUnknown || (state.toCall || 0) > 0) && prev && (state.opponents || 0) >= 4 && (state.opponents || 0) > (prev.opponents || 0)) {
+    if (prev && (state.opponents || 0) >= 4 && (state.opponents || 0) > (prev.opponents || 0)) {
       return { text: "Crowded pot. Tighten up.", tone: "warn" };
     }
 
     if (typeof win === "number" && win >= 80 && (!prev || (prev.winPct || 0) < 80)) {
       return { text: "Rainbow time. This one feels good.", tone: "rainbow" };
-    }
-
-    if (heroFolded) {
-      const obs = observerInsightFromState(state, prev);
-      if (obs) return obs;
     }
 
     return null;
@@ -269,17 +172,6 @@
   const S_SYM = { hearts: "♥", diamonds: "♦", clubs: "♣", spades: "♠" };
 
   const CAT_NAMES = { 8: "StrFl", 7: "Quads", 6: "FH", 5: "Flush", 4: "Str", 3: "Trips", 2: "2Pair", 1: "Pair", 0: "High" };
-  const CAT_LABELS = {
-    StrFl: "a straight flush",
-    Quads: "quads",
-    FH: "a full house",
-    Flush: "a flush",
-    Str: "a straight",
-    Trips: "trips",
-    "2Pair": "two pair",
-    Pair: "a pair",
-    High: "high card"
-  };
   const HAND_NAMES = {
     8: "Straight Flush",
     7: "Four of a Kind",
@@ -511,8 +403,7 @@
   function simulateEquity(hero, board, opps = OPPONENTS, it = ITERS, opponentInfos = null) {
     let win = 0, tie = 0, beatsSum = 0;
 
-    const infos = Array.isArray(opponentInfos) && opponentInfos.length ? opponentInfos : null;
-    const oppCount = Math.max(0, Math.round(opps || 0));
+    const oppCount = Array.isArray(opponentInfos) && opponentInfos.length ? opponentInfos.length : opps;
     if (oppCount <= 0) {
       return { winPct: 100, splitPct: 0, beatsAvg: 0, loseTo: [] };
     }
@@ -529,7 +420,7 @@
       let bestOpp = null;
       const oppHands = [];
       for (let j = 0; j < oppCount; j++) {
-        const info = infos ? infos[j % infos.length] : null;
+        const info = opponentInfos && opponentInfos[j] ? opponentInfos[j] : null;
         const bias = info?.bias || rangeBiasFromProfile(info?.profile);
         const o = drawWeightedHand(d, bias);
         const rHand = bestHand(o.concat(b));
@@ -672,9 +563,7 @@
   }
 
   function pairContext(hero, board) {
-    if (!hero || hero.length < 2) {
-      return { text: "", boardOnly: false, boardPaired: false, pocketPair: false, underpair: false, overpair: false, madeTwoPair: false };
-    }
+    if (!hero || hero.length < 2) return { text: "", boardOnly: false, boardPaired: false };
 
     const boardCounts = rankCounts(board);
     const boardRanks = Object.keys(boardCounts).map(Number);
@@ -689,10 +578,6 @@
     const heroPairsBoard = !!(boardCounts[h1] || boardCounts[h2]);
     const boardOnly = boardPaired && !pocketPair && !heroPairsBoard;
     const maxBoard = board.length ? Math.max(...board.map(c => c.rank)) : 0;
-    const underpair = !!(pocketPair && maxBoard > 0 && pocketPair < maxBoard);
-    const overpair = !!(pocketPair && maxBoard > 0 && pocketPair > maxBoard);
-    const baseInfo = { boardOnly, boardPaired, pocketPair: !!pocketPair, underpair, overpair, madeTwoPair: false };
-    const withInfo = (text, extra = {}) => ({ text, ...baseInfo, ...extra });
 
     if (boardOnly) {
       let text = "Board pair only";
@@ -700,48 +585,40 @@
       else if (boardTripsRank && boardPairRanks.length) text = "Board full house only";
       else if (boardTripsRank) text = "Board trips only";
       else if (boardPairRanks.length >= 2) text = "Board two pair only";
-      return withInfo(text);
+      return { text, boardOnly, boardPaired };
     }
 
     if (pocketPair) {
       const boardMatch = boardCounts[pocketPair] || 0;
-      if (boardMatch >= 2) return withInfo(`Quads (${R_INV[pocketPair]}${R_INV[pocketPair]})`);
-      if (boardMatch === 1) return withInfo(`Set (${R_INV[pocketPair]}${R_INV[pocketPair]})`);
-      if (boardTripsRank) return withInfo(`Full house (${R_INV[boardTripsRank]}s over ${R_INV[pocketPair]}s)`);
-      if (boardPairRanks.length) return withInfo(`Two pair (${R_INV[pocketPair]} + board)`, { madeTwoPair: true });
-      if (pocketPair > maxBoard) return withInfo(`Overpair (${R_INV[pocketPair]}${R_INV[pocketPair]})`);
-      if (pocketPair < maxBoard) return withInfo(`Underpair (${R_INV[pocketPair]}${R_INV[pocketPair]})`);
-      return withInfo(`Pocket pair (${R_INV[pocketPair]}${R_INV[pocketPair]})`);
+      if (boardMatch >= 2) return { text: `Quads (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired };
+      if (boardMatch === 1) return { text: `Set (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired };
+      if (boardTripsRank) return { text: `Full house (${R_INV[boardTripsRank]}s over ${R_INV[pocketPair]}s)`, boardOnly, boardPaired };
+      if (boardPairRanks.length) return { text: `Two pair (${R_INV[pocketPair]} + board)`, boardOnly, boardPaired };
+      if (pocketPair > maxBoard) return { text: `Overpair (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired };
+      if (pocketPair < maxBoard) return { text: `Underpair (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired };
+      return { text: `Pocket pair (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired };
     }
 
     if (heroPairsBoard) {
-      const h1On = boardCounts[h1] || 0;
-      const h2On = boardCounts[h2] || 0;
-      const heroTwoPair = h1On > 0 && h2On > 0 && h1 !== h2;
       const pairRank = boardCounts[h1] ? h1 : h2;
       const kicker = (h1 === pairRank) ? h2 : h1;
       const boardMatch = boardCounts[pairRank] || 0;
       if (boardMatch >= 2) {
-        if (boardMatch >= 3) return withInfo(`Quads (${R_INV[pairRank]})`);
-        return withInfo(`Trips (${R_INV[pairRank]})`);
+        if (boardMatch >= 3) return { text: `Quads (${R_INV[pairRank]})`, boardOnly, boardPaired };
+        return { text: `Trips (${R_INV[pairRank]})`, boardOnly, boardPaired };
       }
       if (boardTripsRank && boardTripsRank !== pairRank) {
-        return withInfo(`Full house (${R_INV[boardTripsRank]}s over ${R_INV[pairRank]}s)`);
+        return { text: `Full house (${R_INV[boardTripsRank]}s over ${R_INV[pairRank]}s)`, boardOnly, boardPaired };
       }
       if (boardPairRanks.length && !boardPairRanks.includes(pairRank)) {
-        return withInfo(`Two pair (${R_INV[pairRank]} + board)`, { madeTwoPair: true });
-      }
-      if (heroTwoPair) {
-        const hiPair = Math.max(h1, h2);
-        const loPair = Math.min(h1, h2);
-        return withInfo(`Two pair (${R_INV[hiPair]} & ${R_INV[loPair]})`, { madeTwoPair: true });
+        return { text: `Two pair (${R_INV[pairRank]} + board)`, boardOnly, boardPaired };
       }
       const pairedNote = boardPaired ? " on paired board" : "";
-      if (pairRank === maxBoard) return withInfo(`Top pair (k ${R_INV[kicker]})${pairedNote}`);
-      return withInfo(`Pair (${R_INV[pairRank]})${pairedNote}`);
+      if (pairRank === maxBoard) return { text: `Top pair (k ${R_INV[kicker]})${pairedNote}`, boardOnly, boardPaired };
+      return { text: `Pair (${R_INV[pairRank]})${pairedNote}`, boardOnly, boardPaired };
     }
 
-    return withInfo("");
+    return { text: "", boardOnly, boardPaired };
   }
 
   /* ===================== TABLE INFO (POT / TO CALL / BLINDS) ===================== */
@@ -812,19 +689,13 @@
   }
 
   function findToCall() {
-    const actionRoot = document.querySelector("div[class*='buttonsWrap'], div[class*='betPanel'], div[class*='betPanelPositioner']");
     const btns = [
-      ...(actionRoot
-        ? actionRoot.querySelectorAll("button, [role='button'], a")
-        : document.querySelectorAll("button, [role='button'], a, div"))
+      ...document.querySelectorAll("button, [role='button'], a, div")
     ].slice(0, 500);
 
     let sawCheck = false;
     let sawCall = false;
     let sawAllIn = false;
-    let sawRaise = false;
-    let sawBet = false;
-    let sawFold = false;
     let callAmount = 0;
     let allInAmount = 0;
 
@@ -839,9 +710,6 @@
         if (/^Check\b/i.test(t) || /Check\s*\/\s*Fold/i.test(t)) sawCheck = true;
         if (/Call\b/i.test(t)) sawCall = true;
         if (/All\s*In/i.test(t)) sawAllIn = true;
-        if (/^Raise\b/i.test(t)) sawRaise = true;
-        if (/^Bet\b/i.test(t)) sawBet = true;
-        if (/^Fold\b/i.test(t) || /Fold\s*\/\s*Check/i.test(t)) sawFold = true;
 
         const amounts = extractAmounts(t);
         if (amounts.length) {
@@ -861,8 +729,7 @@
 
     const amount = Math.max(callAmount, allInAmount);
     const unknown = amount <= 0 && (sawCall || sawAllIn);
-    const heroTurn = sawCheck || sawCall || sawAllIn || sawRaise || sawBet || sawFold;
-    return { amount, unknown, sawCheck, sawCall, sawAllIn, sawRaise, sawBet, sawFold, heroTurn };
+    return { amount, unknown, sawCheck, sawAllIn };
   }
 
   function findBlindsFromFeed() {
@@ -1296,48 +1163,6 @@
     return opponents;
   }
 
-  function aggregateOpponentBias(opponents) {
-    if (!Array.isArray(opponents) || !opponents.length) return null;
-    let tSum = 0;
-    let aSum = 0;
-    let n = 0;
-    for (const opp of opponents) {
-      const bias = opp?.bias || rangeBiasFromProfile(opp?.profile);
-      tSum += typeof bias?.tightness === "number" ? bias.tightness : 0.35;
-      aSum += typeof bias?.aggression === "number" ? bias.aggression : 0.35;
-      n += 1;
-    }
-    if (!n) return null;
-    return {
-      tightness: clamp(tSum / n, 0, 1),
-      aggression: clamp(aSum / n, 0, 1)
-    };
-  }
-
-  function observerSnapshot(opponents) {
-    if (!Array.isArray(opponents) || !opponents.length) return null;
-    let aggro = null;
-    let bluff = null;
-    for (const opp of opponents) {
-      const p = opp?.profile;
-      if (!p || (p.samples || 0) < 5) continue;
-      const aggScore = p.aggScore || 0;
-      const bluffScore = p.bluffScore || 0;
-      if (!aggro || aggScore > aggro.score) {
-        aggro = { name: opp.name || p.name || "player", score: aggScore };
-      }
-      if (!bluff || bluffScore > bluff.score) {
-        bluff = { name: opp.name || p.name || "player", score: bluffScore };
-      }
-    }
-    return {
-      aggroName: aggro?.name || "",
-      aggroScore: aggro?.score || 0,
-      bluffName: bluff?.name || "",
-      bluffScore: bluff?.score || 0
-    };
-  }
-
   function opponentSignature(opponents) {
     if (!Array.isArray(opponents) || !opponents.length) return "";
     return opponents
@@ -1578,45 +1403,6 @@
         letter-spacing: 0.2px;
         opacity: 0.95;
       }
-      #tp_holdem_hud .tp-card.tp-hitCard{
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        text-align: center;
-      }
-      #tp_holdem_hud .tp-card.tp-hitCard h4{
-        display: none;
-      }
-      #tp_holdem_hud .tp-card.tp-hitCard #tp_hit{
-        width: 100%;
-        text-align: center;
-      }
-      #tp_holdem_hud.tp-hit-1 .tp-card.tp-hitCard,
-      #tp_holdem_hud.tp-hit-2 .tp-card.tp-hitCard{
-        animation: tpHitPulse 1200ms ease-in-out infinite;
-      }
-      #tp_holdem_hud.tp-hit-3 .tp-card.tp-hitCard,
-      #tp_holdem_hud.tp-hit-4 .tp-card.tp-hitCard,
-      #tp_holdem_hud.tp-hit-5 .tp-card.tp-hitCard,
-      #tp_holdem_hud.tp-hit-6 .tp-card.tp-hitCard,
-      #tp_holdem_hud.tp-hit-7 .tp-card.tp-hitCard,
-      #tp_holdem_hud.tp-hit-8 .tp-card.tp-hitCard{
-        animation: tpHitPulseBig 900ms ease-in-out infinite;
-        box-shadow: 0 0 0 1px rgba(255,255,255,0.18), 0 0 14px rgba(255,255,255,0.18);
-      }
-      #tp_holdem_hud.tp-hit-3 #tp_hit,
-      #tp_holdem_hud.tp-hit-4 #tp_hit,
-      #tp_holdem_hud.tp-hit-5 #tp_hit,
-      #tp_holdem_hud.tp-hit-6 #tp_hit,
-      #tp_holdem_hud.tp-hit-7 #tp_hit,
-      #tp_holdem_hud.tp-hit-8 #tp_hit{
-        background-image: linear-gradient(90deg, #ff5f6d, #ffc371, #f6ff00, #64ff6a, #52b7ff, #a855f7, #ff5fd7);
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
-        -webkit-text-fill-color: transparent;
-      }
 
       /* Default lines stay compact */
       #tp_holdem_hud .tp-line{
@@ -1647,8 +1433,6 @@
         padding: 8px 10px;
         display: none;
         box-shadow: 0 12px 26px rgba(0,0,0,0.55);
-        max-height: min(70vh, 520px);
-        overflow: hidden;
       }
       #tp_holdem_hud .tp-stats{
         right: auto;
@@ -1675,21 +1459,6 @@
         font-size: ${HUD.fontPx}px;
         line-height: 1.35;
         opacity: 0.92;
-        max-height: min(52vh, 420px);
-        overflow-y: auto;
-        padding-right: 6px;
-        scrollbar-width: thin;
-        scrollbar-color: rgba(255,255,255,0.35) transparent;
-      }
-      #tp_holdem_hud .tp-helpBody::-webkit-scrollbar{
-        width: 6px;
-      }
-      #tp_holdem_hud .tp-helpBody::-webkit-scrollbar-thumb{
-        background: rgba(255,255,255,0.25);
-        border-radius: 999px;
-      }
-      #tp_holdem_hud .tp-helpBody::-webkit-scrollbar-track{
-        background: transparent;
       }
       #tp_holdem_hud .tp-helpItem{ margin-top: 6px; }
       #tp_holdem_hud .tp-helpTerm{ font-weight: 900; }
@@ -1756,16 +1525,6 @@
         55%{ transform: translateZ(0) scale(1.02); }
         100%{ transform: translateZ(0) scale(1.0); }
       }
-      @keyframes tpHitPulse{
-        0%{ transform: translateZ(0) scale(1.0); box-shadow: 0 0 0 rgba(255,255,255,0.0); }
-        60%{ transform: translateZ(0) scale(1.03); box-shadow: 0 0 18px rgba(170,255,190,0.22); }
-        100%{ transform: translateZ(0) scale(1.0); box-shadow: 0 0 0 rgba(255,255,255,0.0); }
-      }
-      @keyframes tpHitPulseBig{
-        0%{ transform: translateZ(0) scale(1.0); box-shadow: 0 0 0 rgba(255,255,255,0.0); }
-        55%{ transform: translateZ(0) scale(1.06); box-shadow: 0 0 26px rgba(255,255,255,0.35); }
-        100%{ transform: translateZ(0) scale(1.0); box-shadow: 0 0 0 rgba(255,255,255,0.0); }
-      }
 
       /* prevent HUD blocking page scroll */
       #tp_holdem_hud .tp-wrap *{ -webkit-tap-highlight-color: transparent; }
@@ -1800,8 +1559,8 @@
         </div>
 
         <div class="tp-grid">
-          <div class="tp-card tp-hitCard">
-            <h4></h4>
+          <div class="tp-card">
+            <h4>Hit</h4>
             <div class="tp-line tp-big" id="tp_hit">…</div>
             <div class="tp-line tp-dim" id="tp_you"></div>
           </div>
@@ -1828,35 +1587,11 @@
             <button class="tp-helpClose" id="tp_help_close" type="button" aria-label="Close">×</button>
           </div>
           <div class="tp-helpBody">
-            <div class="tp-helpItem"><span class="tp-helpTerm">Check</span>: Pass the action for free.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Call</span>: Match the current bet.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Raise</span>: Increase the current bet.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Bet</span>: Put chips in when no bet exists.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Fold</span>: Give up the hand.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Shove</span>: Go all-in.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">All-in</span>: Commit all your chips.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Need%</span>: Minimum win % to call profitably.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Win%</span>: Estimated chance to win.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Confidence</span>: How stable the win estimate is.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Board</span>: Shared community cards.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Lose to</span>: Likely hands that beat you.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">VPIP</span>: % of hands you voluntarily put chips in preflop.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">PFR</span>: % of hands you raised preflop.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Broadway</span>: A,K,Q,J,10 ranks.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">High card</span>: No pair; highest card plays.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Pair</span>: Two cards of the same rank.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Two pair</span>: Two different pairs.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Trips</span>: Three cards of one rank.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Straight</span>: Five cards in sequence.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Flush</span>: Five cards of one suit.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Full house</span>: Trips plus a pair.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Quads</span>: Four cards of one rank.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Kicker</span>: Side card used to break ties.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Overpair</span>: Pocket pair above the board.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Underpair</span>: Pocket pair below the board.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Paired board</span>: Board has a pair.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Monotone</span>: Three same-suit cards on the flop.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Draw</span>: A hand that can improve later.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Tight</span>: Plays fewer hands.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Loose</span>: Plays more hands.</div>
           </div>
@@ -1873,8 +1608,8 @@
             <div class="tp-helpItem"><span class="tp-helpTerm">Hands lost</span>: <span id="tp_stat_losses">0</span></div>
             <div class="tp-helpItem"><span class="tp-helpTerm">VPIP</span>: <span id="tp_stat_vpip">0</span></div>
             <div class="tp-helpItem"><span class="tp-helpTerm">PFR</span>: <span id="tp_stat_pfr">0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Total money won</span>: <span id="tp_stat_money_won">$0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Total money lost</span>: <span id="tp_stat_money_lost">$0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Money won</span>: <span id="tp_stat_money_won">$0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Money lost</span>: <span id="tp_stat_money_lost">$0</span></div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Biggest win</span>: <span id="tp_stat_big_win">$0</span></div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Biggest loss</span>: <span id="tp_stat_big_loss">$0</span></div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Net</span>: <span id="tp_stat_net">$0</span></div>
@@ -2121,9 +1856,10 @@
     const strengthPct = Math.round(strength * 100);
     const shortStack = (stackInfo?.spr || 0) > 0 && (stackInfo?.spr || 0) <= 2;
     const stackAdj = (stackInfo?.callPctStack || 0) >= 0.4 || shortStack ? 0.05 : 0;
-    const openThresh = 0.58 + stackAdj;
-    const callThresh = 0.42 + stackAdj;
-    const shoveThresh = 0.75;
+    const multiAdj = oppCount >= 6 ? 0.1 : oppCount >= 4 ? 0.06 : oppCount >= 2 ? 0.03 : 0;
+    const openThresh = 0.58 + multiAdj + stackAdj;
+    const callThresh = 0.42 + multiAdj + stackAdj;
+    const shoveThresh = 0.75 + multiAdj;
     const callUnknown = !!stackInfo?.callUnknown;
     const priceNeed = callUnknown ? 50 : potOddsPct(pot, toCall);
 
@@ -2132,7 +1868,8 @@
     const pair = hero[0].rank === hero[1].rank;
     const premium = (pair && hi >= 11) || (hi >= 13 && lo >= 12);
 
-    const baseWhy = "Preflop.";
+    const context = `${oppCount || "?"} opp`;
+    const baseWhy = `Preflop vs ${context}.`;
 
     if (!toCall || toCall <= 0) {
       if (strength >= openThresh || premium) {
@@ -2174,14 +1911,10 @@
     const adjustedCat = (boardOnly && heroCat <= 3) ? Math.max(0, heroCat - 1) : heroCat;
     const spr = stackInfo?.spr || 0;
     const callPctStack = stackInfo?.callPctStack || 0;
+    const oppCount = stackInfo?.opponents || 0;
     const callUnknown = !!stackInfo?.callUnknown;
     const bankroll = BANKROLL_RESERVED || 0;
     const callPctBankroll = bankroll > 0 ? (toCall / bankroll) : 0;
-    const underpair = !!pairInfo?.underpair;
-    const underpairCaution = underpair && adjustedCat <= 1;
-    const twoPair = adjustedCat === 2 && !boardOnly;
-    const isRiver = streetName === "River";
-    const hasDrawyBoard = risks && risks.some(r => r.includes("straight") || r.includes("Straight") || r.includes("flush") || r.includes("Flush"));
 
     const improve =
       dist?.reachPct
@@ -2191,27 +1924,27 @@
     const priceNeed = callUnknown ? null : potOddsPct(pot, toCall);
 
     let callThresh = Math.max(0, Math.min(100, (priceNeed ?? 50) + Math.round(mode.callEdge * 100)));
+    if (oppCount >= 3 && adjustedCat < 4) callThresh += 4;
     if (callPctStack >= 0.5 && adjustedCat < 4) callThresh += 8;
     if (spr > 0 && spr <= 2 && adjustedCat < 3) callThresh += 6;
-    if (underpairCaution) {
-      callThresh += (riskCount >= 1 ? 6 : 4);
-    }
-    if (twoPair) callThresh -= hasDrawyBoard ? 2 : 6;
 
     const cheapCall = !callUnknown && (callPctStack <= CHEAP_STACK_RATIO || callPctBankroll <= CHEAP_BANKROLL_RATIO);
-    if (cheapCall && adjustedCat < 5 && !underpairCaution) callThresh -= 6;
+    if (cheapCall && adjustedCat < 5) callThresh -= 6;
 
-    const canLoosen = !callUnknown && callPctStack < 0.35 && (spr === 0 || spr >= 2) && !underpairCaution;
+    const canLoosen = !callUnknown && callPctStack < 0.35 && (spr === 0 || spr >= 2);
     if (canLoosen) {
       let loosen = 0;
       if (riskCount === 0) loosen = 4;
       else if (riskCount === 1) loosen = 2;
-      if (loosen) callThresh -= loosen;
+      if (loosen && oppCount <= 2) callThresh -= loosen;
+      else if (loosen && oppCount === 3) callThresh -= Math.max(1, Math.floor(loosen / 2));
     }
     callThresh = clamp(callThresh, 0, 95);
     const bluffBase = priceNeed ?? 50;
     const bluffThresh = Math.max(0, Math.min(100, bluffBase + Math.round(mode.bluffEdge * 100)));
 
+    const isRiver = streetName === "River";
+    const hasDrawyBoard = risks && risks.some(r => r.includes("straight") || r.includes("Straight") || r.includes("flush") || r.includes("Flush"));
     const monster = adjustedCat >= 6;
     const strong = adjustedCat >= 4;
     const medium = adjustedCat >= 2;
@@ -2221,7 +1954,7 @@
     const action = (act, why, tone) => ({ act, why: stackNote ? `${why} ${stackNote}` : why, tone });
     const heroStack = stackInfo?.heroStack || 0;
 
-    const sizeBucket = monster ? 2 : (strong || twoPair) ? 1 : 0;
+    const sizeBucket = monster ? 2 : strong ? 1 : 0;
     const betFrac = mode.betPot[sizeBucket];
     const raiseFrac = mode.raisePot[sizeBucket];
 
@@ -2266,7 +1999,7 @@
       return action("CALL", "Call is fine. Don't overthink it.", "info");
     }
 
-    if (!isRiver && cheapCall && eq >= Math.max(30, callThresh - 6) && !underpairCaution) {
+    if (!isRiver && cheapCall && eq >= Math.max(30, callThresh - 6)) {
       return action("CALL (SPECULATIVE)", "Cheap peek. Why not.", "info");
     }
 
@@ -2280,14 +2013,10 @@
     if (priceNeed == null) {
       return action("FOLD", "Price is unclear and this is thin. Easy fold.", "warn");
     }
-    const foldWhy = underpairCaution
-      ? "Underpair tends to get crushed here. Save the chips."
-      : "Too expensive for what you have. Save the chips.";
-    return action("FOLD", foldWhy, "warn");
+    return action("FOLD", "Too expensive for what you have. Save the chips.", "warn");
   }
 
   let _lastRenderedState = null;
-  let _stableRec = null;
 
   function renderHud(state) {
     const hud = ensureHud();
@@ -2314,7 +2043,7 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.13";
+      badge.textContent = "PMON v3.9.8";
       sub.textContent = "Waiting…";
       applySubTone(sub, null);
       // streetEl.textContent = "";
@@ -2348,7 +2077,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.13";
+    badge.textContent = "PMON v3.9.8";
     sub.textContent = state.titleLine || "…";
     applySubTone(sub, typeof state.winPct === "number" ? state.winPct : null);
     // streetEl.textContent = state.street || "";
@@ -2378,14 +2107,11 @@
 
     setLine(metaEl, "");
 
-    const heroTurn = !!state.heroTurn;
-    if (heroTurn && state.rec) _stableRec = { ...state.rec };
-    const displayRec = (!heroTurn && _stableRec && state.rec) ? _stableRec : state.rec;
     advEl.classList.remove("good", "warn", "mute");
-    const tone = displayRec?.tone || toneByWin(state.winPct);
+    const tone = state.rec?.tone || toneByWin(state.winPct);
     advEl.classList.add(tone === "good" ? "good" : tone === "warn" ? "warn" : "mute");
-    advEl.textContent = displayRec ? displayRec.act : "…";
-    setLine(whyEl, displayRec ? displayRec.why : "");
+    advEl.textContent = state.rec ? state.rec.act : "…";
+    setLine(whyEl, state.rec ? state.rec.why : "");
 
     const risksTxt = (state.risks && state.risks.length) ? `Board: ${state.risks.join(" · ")}` : "";
     setLine(risksEl, risksTxt);
@@ -2403,7 +2129,6 @@
   setInterval(() => {
     const hero = getHeroCards();
     const board = getBoardCards();
-    const heroKey = hero.length === 2 ? hero.map(c => c.txt).join("") : "";
 
     const pot = findPot();
     const callInfo = findToCall();
@@ -2420,10 +2145,7 @@
 
     positionHud();
     const opponents = getActiveOpponents(profiles);
-    const oppCount = 1;
-    const aggBias = aggregateOpponentBias(opponents);
-    const simOppInfos = aggBias ? [{ bias: aggBias }] : null;
-    const observer = observerSnapshot(opponents);
+    const oppCount = opponents.length || OPPONENTS;
     const heroStack = getHeroStack();
     const effStack = effectiveStack(heroStack, opponents);
     let toCall = callInfo.amount || 0;
@@ -2442,30 +2164,21 @@
       }
     }
     const spr = effStack > 0 && pot > 0 ? (effStack / pot) : 0;
-    const heroTurn = !!callInfo.heroTurn;
     const callPctStack = heroStack > 0 && toCall > 0 ? (toCall / heroStack) : 0;
     const stackText = heroStack > 0
       ? `${fmtMoney(heroStack)}${effStack > 0 && effStack !== heroStack ? ` (eff ${fmtMoney(effStack)})` : ""}`
       : "$?";
     const stackInfo = { heroStack, effStack, spr, callPctStack, opponents: oppCount, callUnknown };
-    const heroFolded = !!_handState.folded;
 
     if (hero.length !== 2) {
-      _stableRec = null;
       if (HUD.showWhenNoHero) {
         renderHud({
           // street: street(board.length),
           heroText: "",
-        boardText: board.map(c => c.txt).join(" "),
+          boardText: board.map(c => c.txt).join(" "),
           boardLen: board.length,
           titleLine: "Waiting for your hole cards…",
           winPct: null,
-        heroTurn,
-          heroFolded: false,
-          observerAggName: observer?.aggroName || "",
-          observerAggScore: observer?.aggroScore || 0,
-          observerBluffName: observer?.bluffName || "",
-          observerBluffScore: observer?.bluffScore || 0,
           pot,
           toCall,
           callUnknown,
@@ -2483,14 +2196,14 @@
     }
 
     const st = street(board.length);
+    const heroKey = hero.map(c => c.txt).join("");
     if (board.length <= 1 && heroKey && heroKey !== _handState.key) {
       _handState = { key: heroKey, vpip: false, pfr: false, folded: false, won: false, lost: false };
-      _stableRec = null;
       stats.handsPlayed = (stats.handsPlayed || 0) + 1;
       saveStats(stats);
       updateStatsUi(stats);
     }
-    const key = heroKey + "|" + board.map(c => c.txt).join("") + "|" + pot + "|" + toCall + "|" + oppCount;
+    const key = hero.map(c => c.txt).join("") + "|" + board.map(c => c.txt).join("") + "|" + pot + "|" + toCall + "|" + oppCount;
 
     if (key === _lastKey) return;
     _lastKey = key;
@@ -2502,12 +2215,12 @@
       const pairInfo = pairContext(hero, board);
       const hitText = hitSummary(hitCat, pairInfo);
       const oppSig = opponentSignature(opponents);
-      const preKey = heroKey + "|" + oppCount + "|" + oppSig;
+      const preKey = hero.map(c => c.txt).join("") + "|" + oppCount + "|" + oppSig;
       let preEq = _preflopCache.key === preKey ? _preflopCache.eq : null;
       let preIters = _preflopCache.key === preKey ? _preflopCache.iters : 0;
       if (!preEq) {
-        preIters = PRE_ITERS;
-        preEq = simulateEquity(hero, [], oppCount, preIters, simOppInfos);
+        preIters = PRE_ITERS + Math.round(oppCount * 12);
+        preEq = simulateEquity(hero, [], oppCount, preIters, opponents.length ? opponents : null);
         _preflopCache = { key: preKey, eq: preEq, iters: preIters };
       }
       const eqConf = equityConfidence(preIters);
@@ -2518,12 +2231,6 @@
         boardText: board.map(c => c.txt).join(" "),
         boardLen: board.length,
         titleLine: `Preflop: ${preLabel}`,
-        heroTurn,
-        heroFolded,
-        observerAggName: observer?.aggroName || "",
-        observerAggScore: observer?.aggroScore || 0,
-        observerBluffName: observer?.bluffName || "",
-        observerBluffScore: observer?.bluffScore || 0,
         currentHit: preLabel,
         hitCat,
         hitLabel,
@@ -2550,7 +2257,7 @@
 
     const mode = getMode();
     const iters = board.length === 3 ? ITERS : board.length === 4 ? Math.round(ITERS * 1.25) : Math.round(ITERS * 1.5);
-    const eq = simulateEquity(hero, board, oppCount, iters, simOppInfos);
+    const eq = simulateEquity(hero, board, oppCount, iters, opponents.length ? opponents : null);
     const eqConf = equityConfidence(iters);
     const bestNow = bestHand(hero.concat(board));
     const currentHit = bestNow.name;
@@ -2581,12 +2288,6 @@
       heroText: hero.map(c => c.txt).join(" "),
       boardText: board.map(c => c.txt).join(" "),
       boardLen: board.length,
-      heroTurn,
-      heroFolded,
-      observerAggName: observer?.aggroName || "",
-      observerAggScore: observer?.aggroScore || 0,
-      observerBluffName: observer?.bluffName || "",
-      observerBluffScore: observer?.bluffScore || 0,
 
       winPct: eq.winPct,
       splitPct: eq.splitPct,
