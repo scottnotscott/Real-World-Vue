@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.3
+// @version      3.9.8
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -15,9 +15,13 @@
   const ITERS = 850;
   const DIST_ITERS = 2400;
   const PRE_ITERS = 480;
+  const BANKROLL_RESERVED = 170000000;
+  const CHEAP_STACK_RATIO = 0.03;
+  const CHEAP_BANKROLL_RATIO = 0.002;
 
   const LS_PROFILES = "tpda_poker_profiles_v1";
   const LS_SEENFEED = "tpda_poker_feedseen_v1";
+  const LS_STATS = "tpda_poker_stats_v1";
   const PROFILE_MAX_RECENT = 40;
 
   const BLURT_TTL_MS = 12000;
@@ -43,12 +47,122 @@
     // Readability
     fontPx: 11,
     titlePx: 13,
-    barHeightPx: 7,
+    barHeightPx: 14,
 
     // Show preflop summary
     showPreflop: true,
     showWhenNoHero: true
   };
+
+  const INSIGHT_SHOW_MS = 2600;
+  const INSIGHT_GAP_MS = 450;
+  const INSIGHT_DEDUPE_MS = 5000;
+
+  let _insightQueue = [];
+  let _insightActive = false;
+  let _insightEl = null;
+  let _insightTimer = null;
+  let _insightLast = { text: "", t: 0 };
+  let _insightBooted = false;
+
+  function setInsightEl(el) {
+    _insightEl = el || null;
+  }
+
+  function normalizeInsightTone(tone) {
+    const t = String(tone || "").toLowerCase();
+    if (t === "good" || t === "warn" || t === "info" || t === "mute" || t === "rainbow") return t;
+    return "mute";
+  }
+
+  function queueInsight(text, tone) {
+    const msg = String(text || "").trim();
+    if (!msg) return;
+    const now = Date.now();
+    if (_insightLast.text === msg && (now - _insightLast.t) < INSIGHT_DEDUPE_MS) return;
+    _insightLast = { text: msg, t: now };
+    _insightQueue.push({ text: msg, tone: normalizeInsightTone(tone) });
+    kickInsightLoop();
+  }
+
+  function kickInsightLoop() {
+    if (_insightActive) return;
+    if (!_insightEl) return;
+    showNextInsight();
+  }
+
+  function showNextInsight() {
+    if (!_insightEl) { _insightActive = false; return; }
+    const next = _insightQueue.shift();
+    if (!next) {
+      _insightActive = false;
+      _insightEl.classList.remove("show");
+      return;
+    }
+    _insightActive = true;
+    _insightEl.classList.remove("tone-mute", "tone-warn", "tone-mid", "tone-good", "rainbow", "tone-info");
+    if (next.tone === "rainbow") _insightEl.classList.add("rainbow");
+    else if (next.tone === "good") _insightEl.classList.add("tone-good");
+    else if (next.tone === "warn") _insightEl.classList.add("tone-warn");
+    else if (next.tone === "info") _insightEl.classList.add("tone-mid");
+    else _insightEl.classList.add("tone-mute");
+    _insightEl.textContent = next.text;
+    _insightEl.classList.remove("show");
+    void _insightEl.offsetWidth;
+    _insightEl.classList.add("show");
+    if (_insightTimer) clearTimeout(_insightTimer);
+    _insightTimer = setTimeout(() => {
+      if (_insightEl) _insightEl.classList.remove("show");
+      _insightTimer = setTimeout(showNextInsight, INSIGHT_GAP_MS);
+    }, INSIGHT_SHOW_MS);
+  }
+
+  function insightFromState(state, prev) {
+    if (!state || !state.rec) return null;
+    const act = String(state.rec.act || "");
+    const prevAct = String(prev?.rec?.act || "");
+    const toCall = state.toCall || 0;
+    const prevToCall = prev?.toCall || 0;
+    const win = typeof state.winPct === "number" ? state.winPct : null;
+
+    if (prev && act && prevAct && act !== prevAct) {
+      if (/^FOLD/i.test(act) && /(CHECK|CALL)/i.test(prevAct)) {
+        return { text: "Ah, raise alert. Fishing line snapped - fold time.", tone: "warn" };
+      }
+      if (/^RAISE/i.test(act) && /(CHECK|CALL)/i.test(prevAct)) {
+        return { text: "Momentum shift. Time to apply pressure.", tone: "good" };
+      }
+      if (/^CALL/i.test(act) && /^FOLD/i.test(prevAct)) {
+        return { text: "Price softened. You can take a peek.", tone: "info" };
+      }
+    }
+
+    if (state.callUnknown) {
+      return { text: "Price is fuzzy. Playing it cautious.", tone: "warn" };
+    }
+
+    if (prev && toCall > 0 && prevToCall > 0 && toCall > prevToCall * 1.5) {
+      return { text: "Raise spotted. Price jumped.", tone: "warn" };
+    }
+
+    if (!toCall && /^CHECK/i.test(act) && (state.boardLen || 0) >= 3 && typeof win === "number" && win < 45) {
+      return { text: "If they fire big, we may have to duck out.", tone: "mute" };
+    }
+
+    if (state.hitText && state.hitText.includes("BOARD") && !String(prev?.hitText || "").includes("BOARD")) {
+      return { text: "Board pair only. Nothing special yet.", tone: "mute" };
+    }
+
+    if (prev && (state.opponents || 0) >= 4 && (state.opponents || 0) > (prev.opponents || 0)) {
+      return { text: "Crowded pot. Tighten up.", tone: "warn" };
+    }
+
+    if (typeof win === "number" && win >= 80 && (!prev || (prev.winPct || 0) < 80)) {
+      return { text: "Rainbow time. This one feels good.", tone: "rainbow" };
+    }
+
+    return null;
+  }
 
   /* ===================== CARD PARSING ===================== */
   const R = { "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 11, "Q": 12, "K": 13, "A": 14 };
@@ -664,6 +778,53 @@
     return MODE;
   }
 
+  function loadStats() {
+    return loadLS(LS_STATS, {
+      handsPlayed: 0,
+      handsFolded: 0,
+      handsWon: 0,
+      handsLost: 0,
+      vpip: 0,
+      pfr: 0,
+      bets: 0,
+      raises: 0,
+      calls: 0,
+      checks: 0,
+      moneyWon: 0,
+      moneyLost: 0,
+      biggestWin: 0,
+      biggestLoss: 0,
+      lastUpdate: 0
+    });
+  }
+
+  function saveStats(stats) {
+    stats.lastUpdate = Date.now();
+    saveLS(LS_STATS, stats);
+  }
+
+  function resetStats() {
+    const blank = {
+      handsPlayed: 0,
+      handsFolded: 0,
+      handsWon: 0,
+      handsLost: 0,
+      vpip: 0,
+      pfr: 0,
+      bets: 0,
+      raises: 0,
+      calls: 0,
+      checks: 0,
+      moneyWon: 0,
+      moneyLost: 0,
+      biggestWin: 0,
+      biggestLoss: 0,
+      lastUpdate: Date.now()
+    };
+    saveLS(LS_STATS, blank);
+    return blank;
+  }
+
   /* ===================== FEED PARSING (seat reads unchanged) ===================== */
   function nodeText(el) { return el ? String(el.textContent || "").trim() : ""; }
   function normName(s) { return String(s || "").trim().toLowerCase().replace(/\s+/g, " "); }
@@ -706,6 +867,18 @@
     return (h >>> 0).toString(16);
   }
 
+  function getHeroNameNorm() {
+    const heroEl = getHeroSeatEl();
+    if (!heroEl) return "";
+    return normName(extractSeatName(heroEl));
+  }
+
+  function extractMoneyFromLine(line) {
+    const amounts = extractAmounts(line);
+    if (!amounts.length) return 0;
+    return Math.max(...amounts);
+  }
+
   function parseActionLine(line) {
     const s = String(line || "").trim();
 
@@ -720,6 +893,13 @@
       return { type: "street", street: norm, raw: s };
     }
 
+    const mRaiseTo = s.match(/^(.+?)\s+rais(?:ed|es)\s+\$?([\d,]+)\s+to\s+\$?([\d,]+)/i);
+    if (mRaiseTo) {
+      return { type: "raise", name: mRaiseTo[1].trim(), raiseBy: toInt(mRaiseTo[2]), raiseTo: toInt(mRaiseTo[3]), raw: s };
+    }
+    const mRaise = s.match(/^(.+?)\s+rais(?:ed|es)\s+to\s+\$?([\d,]+)/i);
+    if (mRaise) return { type: "raise", name: mRaise[1].trim(), raiseTo: toInt(mRaise[2]), raw: s };
+
     const m1 = s.match(/^(.+?)\s+(bets|calls|checks|folds)\b/i);
     if (m1) {
       const name = m1[1].trim();
@@ -729,11 +909,12 @@
       return { type: act === "bets" ? "bet" : "call", name, raw: s };
     }
 
-    const m2 = s.match(/^(.+?)\s+raises\s+to\b/i);
-    if (m2) return { type: "raise", name: m2[1].trim(), raw: s };
-
-    const m3 = s.match(/^(.+?)\s+(won|wins)\b/i);
-    if (m3) return { type: "won", name: m3[1].trim(), raw: s };
+    const m3 = s.match(/^(.+?)\s+(won|wins|collects|collected|lost|loses)\b/i);
+    if (m3) {
+      const act = m3[2].toLowerCase();
+      if (act === "lost" || act === "loses") return { type: "lost", name: m3[1].trim(), raw: s };
+      return { type: "won", name: m3[1].trim(), raw: s };
+    }
 
     return null;
   }
@@ -787,7 +968,7 @@
     return pr._blurts;
   }
 
-  function ingestActionFeed(profiles) {
+  function ingestActionFeed(profiles, heroNameNorm, stats, handState, blinds) {
     const nameToSeat = buildNameToSeatMap();
     const raw = getActionFeedText();
     const lines = normalizeFeedLines(raw);
@@ -831,6 +1012,18 @@
         pr._lastAggSeq = pr._actSeq;
         pr._lastAggStreet = pr._street || "Pre";
         pushRecent(pr, { a: "raise", st: pr._street || "Pre" });
+        const bb = blinds?.bb || 0;
+        const raiseTo = evt.raiseTo || 0;
+        if (bb > 0 && raiseTo > 0) {
+          const overPct = Math.round(((raiseTo - bb) / bb) * 100);
+          if (overPct >= 50) {
+            pr._bbRaiseCount = (pr._bbRaiseCount || 0) + 1;
+            if (pr._bbRaiseCount === 3 || pr._bbRaiseCount === 6 || pr._bbRaiseCount === 9) {
+              const nmLabel = pr.name || evt.name || "player";
+              queueInsight(`Noticed ${nmLabel} raised about ${overPct}% over the big blind a few times now (${pr._bbRaiseCount}).`, "info");
+            }
+          }
+        }
       }
       if (evt.type === "call") { pr.calls++; pushRecent(pr, { a: "call", st: pr._street || "Pre" }); }
       if (evt.type === "check") { pr.checks++; pushRecent(pr, { a: "check", st: pr._street || "Pre" }); }
@@ -849,6 +1042,59 @@
       }
 
       if (evt.type === "won") { pr.wins++; pushRecent(pr, { a: "won", st: pr._street || "Pre" }); }
+
+      if (heroNameNorm && nm === heroNameNorm && stats && handState) {
+        const lineText = String(line || "");
+        const money = extractMoneyFromLine(lineText);
+        if (evt.type === "bet") {
+          stats.bets++;
+          if (!handState.vpip) { stats.vpip++; handState.vpip = true; }
+        }
+        if (evt.type === "raise") {
+          stats.raises++;
+          if (!handState.vpip) { stats.vpip++; handState.vpip = true; }
+          if ((pr._street || "Pre") === "Pre" && !handState.pfr) { stats.pfr++; handState.pfr = true; }
+        }
+        if (evt.type === "call") {
+          stats.calls++;
+          if (!handState.vpip) { stats.vpip++; handState.vpip = true; }
+        }
+        if (evt.type === "check") stats.checks++;
+        if (evt.type === "fold") {
+          if (!handState.folded) {
+            stats.handsFolded++;
+            handState.folded = true;
+          }
+        }
+        if (evt.type === "won") {
+          if (!handState.won) {
+            stats.handsWon++;
+            handState.won = true;
+          }
+        }
+        if (evt.type === "lost") {
+          if (!handState.lost) {
+            stats.handsLost++;
+            handState.lost = true;
+          }
+        }
+        if (/(won|wins|collects|collected)/i.test(lineText) && money > 0) {
+          stats.moneyWon = (stats.moneyWon || 0) + money;
+          stats.biggestWin = Math.max(stats.biggestWin || 0, money);
+          if (!handState.won) {
+            stats.handsWon++;
+            handState.won = true;
+          }
+        }
+        if (/(lost|loses)/i.test(lineText) && money > 0) {
+          stats.moneyLost = (stats.moneyLost || 0) + money;
+          stats.biggestLoss = Math.max(stats.biggestLoss || 0, money);
+          if (!handState.lost) {
+            stats.handsLost++;
+            handState.lost = true;
+          }
+        }
+      }
     }
 
     saveLS(LS_SEENFEED, seen);
@@ -946,6 +1192,7 @@
   let _lastHitCat = -1;
   let _lastKey = "";
   let _preflopCache = { key: "", eq: null, iters: 0 };
+  let _handState = { key: "", vpip: false, pfr: false, folded: false, won: false, lost: false };
 
   function ensureHudStyle() {
     if (document.getElementById("tp-hud-style")) return;
@@ -974,9 +1221,12 @@
       }
       #tp_holdem_hud .tp-wrap{
         pointer-events: auto; /* allow mode toggle */
-        background: rgba(10,10,12,0.80);
-        border: 1px solid rgba(255,255,255,0.14);
-        box-shadow: 0 10px 20px rgba(0,0,0,0.42);
+        background:
+          radial-gradient(circle at 20% 20%, rgba(28,110,72,0.25), transparent 55%),
+          radial-gradient(circle at 80% 80%, rgba(120,70,20,0.22), transparent 60%),
+          linear-gradient(135deg, rgba(16,18,20,0.92), rgba(8,9,11,0.88));
+        border: 1px solid rgba(255,214,120,0.22);
+        box-shadow: 0 10px 20px rgba(0,0,0,0.42), inset 0 0 0 1px rgba(255,255,255,0.04);
         border-radius: 16px;
         padding: ${HUD.padY}px ${HUD.padX}px;
         backdrop-filter: blur(5px);
@@ -991,25 +1241,51 @@
       }
       #tp_holdem_hud .tp-badge{
         font-weight: 950;
-        font-size: ${HUD.titlePx}px;
+        font-size: ${Math.max(2, Math.round(HUD.titlePx * 0.04))}px;
         letter-spacing: 0.5px;
         padding: 4px 10px;
         border-radius: 999px;
-        border: 1px solid rgba(255,255,255,0.18);
-        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,214,120,0.35);
+        background: linear-gradient(90deg, rgba(255,214,120,0.2), rgba(255,214,120,0.06));
         text-shadow: 0 1px 2px rgba(0,0,0,0.85);
         white-space: nowrap;
       }
       #tp_holdem_hud .tp-sub{
         flex: 1;
         min-width: 0;
-        font-size: ${HUD.fontPx}px;
+        font-size: ${Math.max(9, Math.round(HUD.fontPx * 0.75))}px;
         opacity: 0.95;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        transition: color 160ms ease, filter 160ms ease;
+      }
+      #tp_holdem_hud .tp-sub.tone-mute{ color: #c9c9cf; }
+      #tp_holdem_hud .tp-sub.tone-warn{ color: #ff8e8e; }
+      #tp_holdem_hud .tp-sub.tone-mid{ color: #f4d777; }
+      #tp_holdem_hud .tp-sub.tone-good{ color: #9de58a; }
+      #tp_holdem_hud .tp-sub.rainbow{
+        background-image: linear-gradient(90deg, #ff5f6d, #ffc371, #f6ff00, #64ff6a, #52b7ff, #a855f7, #ff5fd7);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        -webkit-text-fill-color: transparent;
+        filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5));
       }
       #tp_holdem_hud .tp-helpBtn{
+        cursor: pointer;
+        font-weight: 900;
+        font-size: ${HUD.fontPx}px;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 1px solid rgba(255,255,255,0.2);
+        background: rgba(255,255,255,0.08);
+        color: #fff;
+        line-height: 1;
+      }
+      #tp_holdem_hud .tp-clipBtn,
+      #tp_holdem_hud .tp-statsBtn{
         cursor: pointer;
         font-weight: 900;
         font-size: ${HUD.fontPx}px;
@@ -1051,12 +1327,44 @@
         overflow: hidden;
         background: rgba(255,255,255,0.10);
         border: 1px solid rgba(255,255,255,0.12);
+        position: relative;
+        display: flex;
+        align-items: center;
       }
-      #tp_holdem_hud .tp-bar > div{
+      #tp_holdem_hud #tp_bar{
         height: 100%;
         width: 0%;
         background: rgba(255,255,255,0.60);
         transition: width 180ms ease;
+      }
+      #tp_holdem_hud .tp-insight{
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: ${Math.max(9, Math.round(HUD.fontPx * 0.85))}px;
+        font-weight: 700;
+        letter-spacing: 0.2px;
+        opacity: 0;
+        transition: opacity 260ms ease;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.65);
+        pointer-events: none;
+        padding: 0 8px;
+        text-align: center;
+      }
+      #tp_holdem_hud .tp-insight.show{ opacity: 1; }
+      #tp_holdem_hud .tp-insight.tone-mute{ color: #c9c9cf; }
+      #tp_holdem_hud .tp-insight.tone-warn{ color: #ff9a9a; }
+      #tp_holdem_hud .tp-insight.tone-mid{ color: #f4d777; }
+      #tp_holdem_hud .tp-insight.tone-good{ color: #9de58a; }
+      #tp_holdem_hud .tp-insight.rainbow{
+        background-image: linear-gradient(90deg, #ff5f6d, #ffc371, #f6ff00, #64ff6a, #52b7ff, #a855f7, #ff5fd7);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        -webkit-text-fill-color: transparent;
+        filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
       }
 
       /* ===== Layout FIXES =====
@@ -1125,6 +1433,10 @@
         padding: 8px 10px;
         display: none;
         box-shadow: 0 12px 26px rgba(0,0,0,0.55);
+      }
+      #tp_holdem_hud .tp-stats{
+        right: auto;
+        left: 10px;
       }
       #tp_holdem_hud .tp-help.is-open{ display: block; }
       #tp_holdem_hud .tp-helpHead{
@@ -1223,7 +1535,10 @@
   function ensureHud() {
     ensureHudStyle();
     let hud = document.getElementById("tp_holdem_hud");
-    if (hud) return hud;
+    if (hud) {
+      setInsightEl(hud.querySelector("#tp_insight"));
+      return hud;
+    }
 
     hud = document.createElement("div");
     hud.id = "tp_holdem_hud";
@@ -1233,16 +1548,21 @@
           <div class="tp-badge" id="tp_badge">TP</div>
           <div class="tp-sub" id="tp_sub">Loading…</div>
           <button class="tp-hideBtn" id="tp_hide_btn" type="button" title="Hide (10s)">🗿</button>
+          <button class="tp-clipBtn" id="tp_clip_btn" type="button" title="Copy page scan">📋</button>
+          <button class="tp-statsBtn" id="tp_stats_btn" type="button" title="Stats">📈</button>
           <button class="tp-helpBtn" id="tp_help_btn" type="button" title="Help">?</button>
         </div>
 
-        <div class="tp-bar"><div id="tp_bar"></div></div>
+        <div class="tp-bar">
+          <div id="tp_bar"></div>
+          <div class="tp-insight" id="tp_insight">cat5 says good luck</div>
+        </div>
 
         <div class="tp-grid">
           <div class="tp-card">
-            <h4>Hand</h4>
+            <h4>Hit</h4>
             <div class="tp-line tp-big" id="tp_hit">…</div>
-            <div class="tp-line tp-dim" id="tp_you">Your Hand: …</div>
+            <div class="tp-line tp-dim" id="tp_you"></div>
           </div>
 
           <div class="tp-card">
@@ -1267,22 +1587,54 @@
             <button class="tp-helpClose" id="tp_help_close" type="button" aria-label="Close">×</button>
           </div>
           <div class="tp-helpBody">
-            <div class="tp-helpItem"><span class="tp-helpTerm">Stack</span>: Chips you (or villain) have left.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Shove</span>: Go all-in.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Need%</span>: Minimum win % to call profitably.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">SPR</span>: Stack-to-pot ratio (lower = pot is big vs stacks).</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">VPIP</span>: % of hands you voluntarily put chips in preflop.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">PFR</span>: % of hands you raised preflop.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Broadway</span>: A,K,Q,J,10 ranks.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Tight</span>: Plays fewer hands.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Loose</span>: Plays more hands.</div>
+          </div>
+        </div>
+        <div class="tp-help tp-stats" id="tp_stats" role="dialog" aria-hidden="true">
+          <div class="tp-helpHead">
+            <div>Session stats</div>
+            <button class="tp-helpClose" id="tp_stats_close" type="button" aria-label="Close">×</button>
+          </div>
+          <div class="tp-helpBody">
+            <div class="tp-helpItem"><span class="tp-helpTerm">Hands played</span>: <span id="tp_stat_hands">0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Hands scrapped</span>: <span id="tp_stat_folds">0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Hands won</span>: <span id="tp_stat_wins">0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Hands lost</span>: <span id="tp_stat_losses">0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">VPIP</span>: <span id="tp_stat_vpip">0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">PFR</span>: <span id="tp_stat_pfr">0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Money won</span>: <span id="tp_stat_money_won">$0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Money lost</span>: <span id="tp_stat_money_lost">$0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Biggest win</span>: <span id="tp_stat_big_win">$0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Biggest loss</span>: <span id="tp_stat_big_loss">$0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Net</span>: <span id="tp_stat_net">$0</span></div>
+            <button class="tp-helpClose" id="tp_stats_reset" type="button">Reset</button>
           </div>
         </div>
       </div>
     `;
     document.documentElement.appendChild(hud);
 
+    setInsightEl(hud.querySelector("#tp_insight"));
+    if (!_insightBooted) {
+      _insightBooted = true;
+      queueInsight("cat5 says good luck", "good");
+    }
+
     const hideBtn = hud.querySelector("#tp_hide_btn");
+    const clipBtn = hud.querySelector("#tp_clip_btn");
+    const statsBtn = hud.querySelector("#tp_stats_btn");
     const helpBtn = hud.querySelector("#tp_help_btn");
     const help = hud.querySelector("#tp_help");
     const helpClose = hud.querySelector("#tp_help_close");
+    const statsPanel = hud.querySelector("#tp_stats");
+    const statsClose = hud.querySelector("#tp_stats_close");
+    const statsReset = hud.querySelector("#tp_stats_reset");
     let hideTimer = null;
 
     const setHelpOpen = (open) => {
@@ -1306,6 +1658,11 @@
         setHelpOpen(false);
       }, { passive: false });
     }
+    const setStatsOpen = (open) => {
+      if (!statsPanel) return;
+      statsPanel.classList.toggle("is-open", open);
+      statsPanel.setAttribute("aria-hidden", open ? "false" : "true");
+    };
     if (hideBtn) {
       hideBtn.addEventListener("click", (e) => {
         e.preventDefault();
@@ -1316,6 +1673,36 @@
           hud.classList.remove("tp-hidden");
           hideTimer = null;
         }, 10000);
+      }, { passive: false });
+    }
+    if (statsBtn) {
+      statsBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const isOpen = statsPanel && statsPanel.classList.contains("is-open");
+        setStatsOpen(!isOpen);
+      }, { passive: false });
+    }
+    if (statsClose) {
+      statsClose.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setStatsOpen(false);
+      }, { passive: false });
+    }
+    if (statsReset) {
+      statsReset.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const stats = resetStats();
+        updateStatsUi(stats);
+      }, { passive: false });
+    }
+    if (clipBtn) {
+      clipBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        copyDomScanToClipboard();
       }, { passive: false });
     }
 
@@ -1330,9 +1717,78 @@
     hud.style.bottom = "auto";
   }
 
-  function toneByWin(winPct) {
-    if (typeof winPct !== "number") return "mute";
-    return winPct >= 65 ? "good" : winPct >= 45 ? "info" : "warn";
+  function copyTextToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(() => { });
+      return;
+    }
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "readonly");
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch { }
+    document.body.removeChild(ta);
+  }
+
+  function collectDomSnapshot() {
+    const els = [...document.querySelectorAll("*")];
+    const data = {
+      ts: new Date().toISOString(),
+      url: location.href,
+      totalElements: els.length,
+      elements: els.map((el, idx) => {
+        const text = String(el.textContent || "").replace(/\s+/g, " ").trim();
+        const snippet = text.length > 80 ? text.slice(0, 77) + "..." : text;
+        const attrs = {};
+        if (el.attributes) {
+          for (const a of el.attributes) {
+            if (a && a.name && a.name.startsWith("data-")) attrs[a.name] = a.value;
+          }
+        }
+        const role = el.getAttribute ? el.getAttribute("role") : "";
+        const aria = el.getAttribute ? el.getAttribute("aria-label") : "";
+        return {
+          i: idx,
+          tag: el.tagName ? el.tagName.toLowerCase() : "",
+          id: el.id || "",
+          cls: typeof el.className === "string" ? el.className : "",
+          role: role || "",
+          aria: aria || "",
+          txt: snippet,
+          data: attrs
+        };
+      })
+    };
+    return JSON.stringify(data, null, 2);
+  }
+
+  function copyDomScanToClipboard() {
+    const payload = collectDomSnapshot();
+    copyTextToClipboard(payload);
+  }
+
+  function updateStatsUi(stats) {
+    const hud = document.getElementById("tp_holdem_hud");
+    if (!hud || !stats) return;
+    const set = (id, val) => {
+      const el = hud.querySelector(id);
+      if (el) el.textContent = val;
+    };
+    set("#tp_stat_hands", stats.handsPlayed || 0);
+    set("#tp_stat_folds", stats.handsFolded || 0);
+    set("#tp_stat_wins", stats.handsWon || 0);
+    set("#tp_stat_losses", stats.handsLost || 0);
+    set("#tp_stat_vpip", stats.vpip || 0);
+    set("#tp_stat_pfr", stats.pfr || 0);
+    set("#tp_stat_money_won", fmtMoney(stats.moneyWon || 0));
+    set("#tp_stat_money_lost", fmtMoney(stats.moneyLost || 0));
+    set("#tp_stat_big_win", fmtMoney(stats.biggestWin || 0));
+    set("#tp_stat_big_loss", fmtMoney(stats.biggestLoss || 0));
+    const net = (stats.moneyWon || 0) - (stats.moneyLost || 0);
+    set("#tp_stat_net", (net >= 0 ? "+" : "-") + fmtMoney(Math.abs(net)));
   }
 
   function excitementLabel(cat) {
@@ -1344,7 +1800,48 @@
     if (cat === 3) return "💥 TRIPS";
     if (cat === 2) return "✅ TWO PAIR";
     if (cat === 1) return "✅ PAIR";
-    return "NO HIT";
+    return "HIGH CARD";
+  }
+
+  function boardOnlyHitLabel(pairInfo) {
+    const t = (pairInfo?.text || "").toLowerCase();
+    if (t.includes("quads")) return "BOARD QUADS";
+    if (t.includes("full house")) return "BOARD FULL HOUSE";
+    if (t.includes("trips")) return "BOARD TRIPS";
+    if (t.includes("two pair")) return "BOARD TWO PAIR";
+    if (t.includes("pair")) return "BOARD PAIR";
+    return "BOARD PAIR";
+  }
+
+  function hitSummary(cat, pairInfo) {
+    if (pairInfo?.boardOnly) return boardOnlyHitLabel(pairInfo);
+    return excitementLabel(cat);
+  }
+
+  function applySubTone(sub, winPct) {
+    if (!sub) return;
+    sub.classList.remove("tone-mute", "tone-warn", "tone-mid", "tone-good", "rainbow");
+    sub.style.color = "";
+    sub.style.webkitTextFillColor = "";
+    if (typeof winPct !== "number") {
+      sub.classList.add("tone-mute");
+      return;
+    }
+    const w = Math.max(0, Math.min(100, winPct));
+    if (w >= 80) {
+      sub.classList.add("rainbow");
+      return;
+    }
+    const hue = Math.round(120 * (w / 100));
+    sub.style.color = `hsl(${hue}, 80%, 65%)`;
+    if (w >= 65) sub.classList.add("tone-good");
+    else if (w >= 45) sub.classList.add("tone-mid");
+    else sub.classList.add("tone-warn");
+  }
+
+  function toneByWin(winPct) {
+    if (typeof winPct !== "number") return "mute";
+    return winPct >= 65 ? "good" : winPct >= 45 ? "info" : "warn";
   }
 
   function wantsNextCards(dist) {
@@ -1372,29 +1869,29 @@
     const premium = (pair && hi >= 11) || (hi >= 13 && lo >= 12);
 
     const context = `${oppCount || "?"} opp`;
-    const baseWhy = `Preflop strength ~${strengthPct}%. ${context}.`;
+    const baseWhy = `Preflop vs ${context}.`;
 
     if (!toCall || toCall <= 0) {
       if (strength >= openThresh || premium) {
-        return { act: shortStack ? "RAISE (COMMIT)" : "RAISE", why: `${baseWhy} Strong open.`, tone: "info", strengthPct };
+        return { act: shortStack ? "RAISE (COMMIT)" : "RAISE", why: `${baseWhy} Strong start. Take the lead.`, tone: "info", strengthPct };
       }
       if (strength >= callThresh) {
-        return { act: "CHECK (or SMALL OPEN)", why: `${baseWhy} Marginal; keep it small.`, tone: "mute", strengthPct };
+        return { act: "CHECK (or SMALL OPEN)", why: `${baseWhy} Playable. Keep it small.`, tone: "mute", strengthPct };
       }
-      return { act: "CHECK", why: `${baseWhy} Too weak to open.`, tone: "mute", strengthPct };
+      return { act: "CHECK", why: `${baseWhy} Not enough. Easy check.`, tone: "mute", strengthPct };
     }
 
     if (strength >= shoveThresh && shortStack) {
-      return { act: "RAISE (ALL-IN)", why: `${baseWhy} Strong hand + short stack.`, tone: "good", strengthPct };
+      return { act: "RAISE (ALL-IN)", why: `${baseWhy} Short stack and strong hand. Put it in.`, tone: "good", strengthPct };
     }
     if (strength >= openThresh || premium) {
-      return { act: "RAISE", why: `${baseWhy} Strong continue.`, tone: "info", strengthPct };
+      return { act: "RAISE", why: `${baseWhy} Strong enough to push back.`, tone: "info", strengthPct };
     }
     if (strength >= callThresh || strengthPct >= priceNeed) {
-      const priceNote = callUnknown ? "Price unknown." : "Price OK vs strength.";
+      const priceNote = callUnknown ? "Price is a mystery, but this is OK." : "Looks fine to continue.";
       return { act: "CALL", why: `${baseWhy} ${priceNote}`, tone: "info", strengthPct };
     }
-    return { act: "FOLD", why: `${baseWhy} Too weak vs price.`, tone: "warn", strengthPct };
+    return { act: "FOLD", why: `${baseWhy} Not worth it. Save the chips.`, tone: "warn", strengthPct };
   }
 
   function preflopHandLabel(hero) {
@@ -1416,6 +1913,8 @@
     const callPctStack = stackInfo?.callPctStack || 0;
     const oppCount = stackInfo?.opponents || 0;
     const callUnknown = !!stackInfo?.callUnknown;
+    const bankroll = BANKROLL_RESERVED || 0;
+    const callPctBankroll = bankroll > 0 ? (toCall / bankroll) : 0;
 
     const improve =
       dist?.reachPct
@@ -1428,6 +1927,9 @@
     if (oppCount >= 3 && adjustedCat < 4) callThresh += 4;
     if (callPctStack >= 0.5 && adjustedCat < 4) callThresh += 8;
     if (spr > 0 && spr <= 2 && adjustedCat < 3) callThresh += 6;
+
+    const cheapCall = !callUnknown && (callPctStack <= CHEAP_STACK_RATIO || callPctBankroll <= CHEAP_BANKROLL_RATIO);
+    if (cheapCall && adjustedCat < 5) callThresh -= 6;
 
     const canLoosen = !callUnknown && callPctStack < 0.35 && (spr === 0 || spr >= 2);
     if (canLoosen) {
@@ -1447,8 +1949,8 @@
     const strong = adjustedCat >= 4;
     const medium = adjustedCat >= 2;
     const stackNote = callPctStack >= 0.5
-      ? "High stack risk."
-      : (spr > 0 && spr <= 2 ? `Short stack (SPR ${spr.toFixed(1)}).` : "");
+      ? "Big chunk of your stack."
+      : (spr > 0 && spr <= 2 ? "Short stacks." : "");
     const action = (act, why, tone) => ({ act, why: stackNote ? `${why} ${stackNote}` : why, tone });
     const heroStack = stackInfo?.heroStack || 0;
 
@@ -1464,50 +1966,54 @@
     const callRequired = callUnknown || (toCall && toCall > 0);
     if (!callRequired) {
       if (boardOnly && adjustedCat <= 1) {
-        return action("CHECK", "Board pair only. Keep the pot small.", "mute");
+        return action("CHECK", "Board pair only. Keep it small.", "mute");
       }
       if (monster) return action(`BET ${betLabel}`, "You hit huge. Build a pot.", "good");
-      if (strong) return action(`BET ${betLabel}`, hasDrawyBoard ? "Charge draws." : "Push advantage.", "info");
+      if (strong) return action(`BET ${betLabel}`, hasDrawyBoard ? "Don't give free cards." : "You're ahead. Keep the pressure on.", "info");
       if (medium) {
-        return action(`BET ${betLabel}`, boardOnly ? "Thin value on a paired board." : "Apply pressure, maybe takes it down.", "info");
+        return action(`BET ${betLabel}`, boardOnly ? "Paired board. Small poke is fine." : "Decent hand. Take a small shot.", "info");
       }
       if (!isRiver && improve >= 28) {
         const semiBet = Math.max(1, Math.round(pot * 0.55));
         const semiLabel = wagerLabel(semiBet, "SMALL", heroStack);
-        return action(`BET ${semiLabel}`, `Semi-bluff. Improve chance ~${improve}%.`, "info");
+        return action(`BET ${semiLabel}`, "Take a stab; you can still improve.", "info");
       }
       return action("CHECK", "No hand yet. Check if you can.", "mute");
     }
 
     if (eq >= Math.max(70, callThresh + 15)) {
-      return action(`RAISE ${raiseLabel}`, "Crushing. Get paid.", "good");
+      return action(`RAISE ${raiseLabel}`, "Crushing it. Get paid.", "good");
     }
 
     if (eq >= Math.max(callThresh + 6, 55)) {
-      return action(`CALL (or RAISE ${raiseLabel})`, hasDrawyBoard ? "Ahead—punish draws." : "Ahead often enough.", "info");
+      return action(`CALL (or RAISE ${raiseLabel})`, hasDrawyBoard ? "Ahead. Make them pay to see more." : "Ahead often. Lean in.", "info");
     }
 
     if (eq >= callThresh) {
       if (!isRiver && improve >= 24 && eq < 55) {
-        return action("CALL", `Price is OK + improve ~${improve}%.`, "info");
+        return action("CALL", "Close call, but you can still improve.", "info");
       }
       if (priceNeed == null) {
-        return action("CALL", `Price unknown. You have ~${eq}%.`, "info");
+        return action("CALL", "Price is unclear, but it's close enough.", "info");
       }
-      return action("CALL", `Price OK. Need ~${priceNeed}%; you have ~${eq}%.`, "info");
+      return action("CALL", "Call is fine. Don't overthink it.", "info");
+    }
+
+    if (!isRiver && cheapCall && eq >= Math.max(30, callThresh - 6)) {
+      return action("CALL (SPECULATIVE)", "Cheap peek. Why not.", "info");
     }
 
     if (!isRiver && improve >= 35 && eq >= bluffThresh) {
       if (priceNeed == null) {
-        return action(`CALL (DRAW)`, `Behind now, improve ~${improve}%. Price unknown.`, "info");
+        return action("CALL", "You might improve. Worth a look.", "info");
       }
-      return action(`CALL (DRAW)`, `Behind now, but improve ~${improve}%. Need ~${priceNeed}%.`, "info");
+      return action("CALL", "You might improve. Worth a look.", "info");
     }
 
     if (priceNeed == null) {
-      return action("FOLD", `Price unknown. You have ~${eq}%.`, "warn");
+      return action("FOLD", "Price is unclear and this is thin. Easy fold.", "warn");
     }
-    return action("FOLD", `Too expensive. Need ~${priceNeed}%; you have ~${eq}%.`, "warn");
+    return action("FOLD", "Too expensive for what you have. Save the chips.", "warn");
   }
 
   let _lastRenderedState = null;
@@ -1515,6 +2021,9 @@
   function renderHud(state) {
     const hud = ensureHud();
     positionHud();
+    const prevState = _lastRenderedState;
+    setInsightEl(hud.querySelector("#tp_insight"));
+    kickInsightLoop();
 
     const badge = hud.querySelector("#tp_badge");
     const sub = hud.querySelector("#tp_sub");
@@ -1534,13 +2043,17 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.3";
+      badge.textContent = "PMON v3.9.8";
       sub.textContent = "Waiting…";
+      applySubTone(sub, null);
       // streetEl.textContent = "";
       bar.style.width = "0%";
 
       hitEl.textContent = "->";
-      youEl.textContent = "Your hand: ->";
+      if (youEl) {
+        youEl.textContent = "";
+        youEl.style.display = "none";
+      }
 
       winEl.textContent = "Win: …";
       confEl.textContent = "Confidence: …";
@@ -1564,15 +2077,15 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.3";
+    badge.textContent = "PMON v3.9.8";
     sub.textContent = state.titleLine || "…";
+    applySubTone(sub, typeof state.winPct === "number" ? state.winPct : null);
     // streetEl.textContent = state.street || "";
 
     const w = typeof state.winPct === "number" ? Math.max(0, Math.min(100, state.winPct)) : 0;
     bar.style.width = w + "%";
 
-    hitEl.textContent = state.hitLabel || state.currentHit || "…";
-    youEl.textContent = `Your hand: ${state.heroText || "N/A"}`;
+    hitEl.textContent = state.hitText || state.hitLabel || state.currentHit || "…";
 
     const setLine = (el, text) => {
       if (!el) return;
@@ -1581,18 +2094,18 @@
       el.style.display = t ? "" : "none";
     };
 
+    setLine(youEl, "");
+
     const showWin = !!state.showWin || state.boardLen >= 3;
     if (showWin && typeof state.winPct === "number") {
       winEl.textContent = `Win: ${state.winPct}%`;
       setLine(confEl, `Confidence: ${state.eqConf || 0}%`);
     } else {
-      winEl.textContent = HUD.showPreflop ? "Win: will start after flop" : "Win: …";
+      winEl.textContent = HUD.showPreflop ? "Win: will start when cards are drawn" : "Win: …";
       setLine(confEl, state.eqConf ? `Confidence: ${state.eqConf}%` : "");
     }
 
-    const stackTxt = state.stackText && state.stackText !== "$?" ? `Stack ${state.stackText}` : "";
-    const sprTxt = state.spr ? `SPR ${state.spr.toFixed(1)}` : "";
-    setLine(metaEl, [stackTxt, sprTxt].filter(Boolean).join(" · "));
+    setLine(metaEl, "");
 
     advEl.classList.remove("good", "warn", "mute");
     const tone = state.rec?.tone || toneByWin(state.winPct);
@@ -1606,6 +2119,9 @@
     const loseToTxt = (state.loseTo && state.loseTo.length) ? `Lose to: ${state.loseTo.join(" · ")}` : "";
     setLine(loseToEl, loseToTxt);
 
+    const insight = insightFromState(state, prevState);
+    if (insight) queueInsight(insight.text, insight.tone);
+
     _lastRenderedState = state;
   }
 
@@ -1614,16 +2130,20 @@
     const hero = getHeroCards();
     const board = getBoardCards();
 
-    const profiles = loadLS(LS_PROFILES, {}) || {};
-    ingestActionFeed(profiles);
-    scoreProfiles(profiles);
-    saveLS(LS_PROFILES, profiles);
-
-    positionHud();
-
     const pot = findPot();
     const callInfo = findToCall();
     const blinds = findBlindsFromFeed();
+
+    const profiles = loadLS(LS_PROFILES, {}) || {};
+    const stats = loadStats();
+    const heroNameNorm = getHeroNameNorm();
+    ingestActionFeed(profiles, heroNameNorm, stats, _handState, blinds);
+    scoreProfiles(profiles);
+    saveLS(LS_PROFILES, profiles);
+    saveStats(stats);
+    updateStatsUi(stats);
+
+    positionHud();
     const opponents = getActiveOpponents(profiles);
     const oppCount = opponents.length || OPPONENTS;
     const heroStack = getHeroStack();
@@ -1676,6 +2196,13 @@
     }
 
     const st = street(board.length);
+    const heroKey = hero.map(c => c.txt).join("");
+    if (board.length <= 1 && heroKey && heroKey !== _handState.key) {
+      _handState = { key: heroKey, vpip: false, pfr: false, folded: false, won: false, lost: false };
+      stats.handsPlayed = (stats.handsPlayed || 0) + 1;
+      saveStats(stats);
+      updateStatsUi(stats);
+    }
     const key = hero.map(c => c.txt).join("") + "|" + board.map(c => c.txt).join("") + "|" + pot + "|" + toCall + "|" + oppCount;
 
     if (key === _lastKey) return;
@@ -1685,6 +2212,8 @@
       const preLabel = preflopHandLabel(hero);
       const hitCat = hero[0].rank === hero[1].rank ? 1 : 0;
       const hitLabel = excitementLabel(hitCat);
+      const pairInfo = pairContext(hero, board);
+      const hitText = hitSummary(hitCat, pairInfo);
       const oppSig = opponentSignature(opponents);
       const preKey = hero.map(c => c.txt).join("") + "|" + oppCount + "|" + oppSig;
       let preEq = _preflopCache.key === preKey ? _preflopCache.eq : null;
@@ -1705,6 +2234,7 @@
         currentHit: preLabel,
         hitCat,
         hitLabel,
+        hitText,
         winPct: preEq?.winPct ?? null,
         splitPct: preEq?.splitPct ?? null,
         beats: preEq?.beatsAvg ?? 0,
@@ -1736,6 +2266,7 @@
 
     const risks = boardRisks(board);
     const pairInfo = pairContext(hero, board);
+    const hitText = hitSummary(hitCat, pairInfo);
 
     const dist = (board.length === 3 || board.length === 4) ? finalDistribution(hero, board) : null;
     const want = wantsNextCards(dist);
@@ -1749,7 +2280,7 @@
     let whyExtra = "";
     if (want && (st === "Flop" || st === "Turn")) {
       const improve = dist?.reachPct ? Math.max(dist.reachPct.strPlus || 0, dist.reachPct.flPlus || 0, dist.reachPct.fhPlus || 0) : 0;
-      if (improve >= 20) whyExtra = `Likely by river: ${want.reach || want.top || ""}`.trim();
+      if (improve >= 20) whyExtra = "You can still catch help on later cards.";
     }
 
     renderHud({
@@ -1767,6 +2298,7 @@
       currentHit,
       hitCat,
       hitLabel,
+      hitText,
 
       risks,
       pairCtx: pairInfo.text,
