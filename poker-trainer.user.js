@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.12
+// @version      3.9.13
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -57,6 +57,10 @@
   const INSIGHT_SHOW_MS = 2600;
   const INSIGHT_GAP_MS = 450;
   const INSIGHT_DEDUPE_MS = 5000;
+  const OBSERVER_COOLDOWN_MS = 3400;
+  const OBSERVER_GUESS_CHANCE = 0.22;
+  const OBSERVER_PATTERN_CHANCE = 0.3;
+  const OBSERVER_FILLER_CHANCE = 0.35;
 
   let _insightQueue = [];
   let _insightActive = false;
@@ -64,6 +68,18 @@
   let _insightTimer = null;
   let _insightLast = { text: "", t: 0 };
   let _insightBooted = false;
+  let _observerLastAt = 0;
+
+  const OBSERVER_FILLERS = [
+    "Spectator mode on. Chips are doing laps.",
+    "Dealer is just vibing.",
+    "This pot is simmering.",
+    "Someone is allergic to folding.",
+    "Check-check harmony is real.",
+    "That pause was pure drama.",
+    "The table is telling a story.",
+    "We are here for the plot."
+  ];
 
   function setInsightEl(el) {
     _insightEl = el || null;
@@ -73,6 +89,76 @@
     const t = String(tone || "").toLowerCase();
     if (t === "good" || t === "warn" || t === "info" || t === "mute" || t === "rainbow") return t;
     return "mute";
+  }
+
+  function prettyCatLabel(shortName) {
+    const key = String(shortName || "");
+    return CAT_LABELS[key] || key.toLowerCase();
+  }
+
+  function pickOne(list) {
+    if (!Array.isArray(list) || !list.length) return null;
+    return list[randInt(list.length)];
+  }
+
+  function observerInsightFromState(state, prev) {
+    if (!state?.heroFolded) return null;
+    const now = Date.now();
+    if (now - _observerLastAt < OBSERVER_COOLDOWN_MS) return null;
+
+    const lines = [];
+    if (prev && !prev.heroFolded) {
+      lines.push({ text: "Folded. Backseat mode on.", tone: "mute" });
+    }
+
+    if (prev && (state.boardLen || 0) > (prev.boardLen || 0)) {
+      const st = street(state.boardLen || 0);
+      if (st === "Flop") lines.push({ text: "Flop rolls out. The plot thickens.", tone: "info" });
+      else if (st === "Turn") lines.push({ text: "Turn card drops. Everyone pretends to be calm.", tone: "info" });
+      else if (st === "River") lines.push({ text: "River hits. Poker faces locked in.", tone: "info" });
+    }
+
+    if (prev && state.pot && prev.pot && state.pot > prev.pot * 1.6) {
+      lines.push({ text: "Pot just ballooned. Someone is swinging big.", tone: "warn" });
+    }
+
+    if (state.risks?.length && Math.random() < 0.4) {
+      const risk = String(state.risks[0] || "").toLowerCase();
+      lines.push({ text: `Board looks ${risk}.`, tone: "mute" });
+    }
+
+    if (state.observerAggName && state.observerAggScore >= 55 && Math.random() < OBSERVER_PATTERN_CHANCE) {
+      lines.push({ text: `${state.observerAggName} keeps applying pressure.`, tone: "info" });
+    }
+    if (state.observerBluffName && state.observerBluffScore >= 55 && Math.random() < OBSERVER_PATTERN_CHANCE) {
+      lines.push({ text: `${state.observerBluffName} is playing fearless.`, tone: "info" });
+    }
+
+    if ((state.boardLen || 0) >= 3 && Math.random() < OBSERVER_GUESS_CHANCE) {
+      const topLose = state.loseTo && state.loseTo.length ? String(state.loseTo[0] || "") : "";
+      if (topLose) {
+        const short = topLose.split(/\s+/)[0];
+        lines.push({ text: `My guess: someone has ${prettyCatLabel(short)}.`, tone: "info" });
+      } else if (state.risks?.some(r => /flush/i.test(r))) {
+        lines.push({ text: "Guessing a flush draw is out there.", tone: "info" });
+      } else if (state.risks?.some(r => /straight/i.test(r))) {
+        lines.push({ text: "Feels like a straight draw is lurking.", tone: "info" });
+      } else if (state.risks?.some(r => /paired board/i.test(r))) {
+        lines.push({ text: "Paired board. Someone likely paired it.", tone: "info" });
+      } else {
+        lines.push({ text: "My guess: a top pair is out there.", tone: "info" });
+      }
+    }
+
+    let pool = lines;
+    if (!pool.length || Math.random() < OBSERVER_FILLER_CHANCE) {
+      pool = pool.concat(OBSERVER_FILLERS.map(text => ({ text, tone: "mute" })));
+    }
+
+    const pick = pickOne(pool);
+    if (!pick) return null;
+    _observerLastAt = now;
+    return pick;
   }
 
   function queueInsight(text, tone) {
@@ -125,6 +211,7 @@
     const prevToCall = prev?.toCall || 0;
     const win = typeof state.winPct === "number" ? state.winPct : null;
     const heroTurn = !!state.heroTurn;
+    const heroFolded = !!state.heroFolded;
 
     if (prev && act && prevAct && act !== prevAct) {
       if (/^FOLD/i.test(act) && /(CHECK|CALL)/i.test(prevAct)) {
@@ -166,6 +253,11 @@
       return { text: "Rainbow time. This one feels good.", tone: "rainbow" };
     }
 
+    if (heroFolded) {
+      const obs = observerInsightFromState(state, prev);
+      if (obs) return obs;
+    }
+
     return null;
   }
 
@@ -177,6 +269,17 @@
   const S_SYM = { hearts: "♥", diamonds: "♦", clubs: "♣", spades: "♠" };
 
   const CAT_NAMES = { 8: "StrFl", 7: "Quads", 6: "FH", 5: "Flush", 4: "Str", 3: "Trips", 2: "2Pair", 1: "Pair", 0: "High" };
+  const CAT_LABELS = {
+    StrFl: "a straight flush",
+    Quads: "quads",
+    FH: "a full house",
+    Flush: "a flush",
+    Str: "a straight",
+    Trips: "trips",
+    "2Pair": "two pair",
+    Pair: "a pair",
+    High: "high card"
+  };
   const HAND_NAMES = {
     8: "Straight Flush",
     7: "Four of a Kind",
@@ -1211,6 +1314,30 @@
     };
   }
 
+  function observerSnapshot(opponents) {
+    if (!Array.isArray(opponents) || !opponents.length) return null;
+    let aggro = null;
+    let bluff = null;
+    for (const opp of opponents) {
+      const p = opp?.profile;
+      if (!p || (p.samples || 0) < 5) continue;
+      const aggScore = p.aggScore || 0;
+      const bluffScore = p.bluffScore || 0;
+      if (!aggro || aggScore > aggro.score) {
+        aggro = { name: opp.name || p.name || "player", score: aggScore };
+      }
+      if (!bluff || bluffScore > bluff.score) {
+        bluff = { name: opp.name || p.name || "player", score: bluffScore };
+      }
+    }
+    return {
+      aggroName: aggro?.name || "",
+      aggroScore: aggro?.score || 0,
+      bluffName: bluff?.name || "",
+      bluffScore: bluff?.score || 0
+    };
+  }
+
   function opponentSignature(opponents) {
     if (!Array.isArray(opponents) || !opponents.length) return "";
     return opponents
@@ -2187,7 +2314,7 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.12";
+      badge.textContent = "PMON v3.9.13";
       sub.textContent = "Waiting…";
       applySubTone(sub, null);
       // streetEl.textContent = "";
@@ -2221,7 +2348,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.12";
+    badge.textContent = "PMON v3.9.13";
     sub.textContent = state.titleLine || "…";
     applySubTone(sub, typeof state.winPct === "number" ? state.winPct : null);
     // streetEl.textContent = state.street || "";
@@ -2296,6 +2423,7 @@
     const oppCount = 1;
     const aggBias = aggregateOpponentBias(opponents);
     const simOppInfos = aggBias ? [{ bias: aggBias }] : null;
+    const observer = observerSnapshot(opponents);
     const heroStack = getHeroStack();
     const effStack = effectiveStack(heroStack, opponents);
     let toCall = callInfo.amount || 0;
@@ -2320,6 +2448,7 @@
       ? `${fmtMoney(heroStack)}${effStack > 0 && effStack !== heroStack ? ` (eff ${fmtMoney(effStack)})` : ""}`
       : "$?";
     const stackInfo = { heroStack, effStack, spr, callPctStack, opponents: oppCount, callUnknown };
+    const heroFolded = !!_handState.folded;
 
     if (hero.length !== 2) {
       _stableRec = null;
@@ -2332,6 +2461,11 @@
           titleLine: "Waiting for your hole cards…",
           winPct: null,
         heroTurn,
+          heroFolded: false,
+          observerAggName: observer?.aggroName || "",
+          observerAggScore: observer?.aggroScore || 0,
+          observerBluffName: observer?.bluffName || "",
+          observerBluffScore: observer?.bluffScore || 0,
           pot,
           toCall,
           callUnknown,
@@ -2385,6 +2519,11 @@
         boardLen: board.length,
         titleLine: `Preflop: ${preLabel}`,
         heroTurn,
+        heroFolded,
+        observerAggName: observer?.aggroName || "",
+        observerAggScore: observer?.aggroScore || 0,
+        observerBluffName: observer?.bluffName || "",
+        observerBluffScore: observer?.bluffScore || 0,
         currentHit: preLabel,
         hitCat,
         hitLabel,
@@ -2443,6 +2582,11 @@
       boardText: board.map(c => c.txt).join(" "),
       boardLen: board.length,
       heroTurn,
+      heroFolded,
+      observerAggName: observer?.aggroName || "",
+      observerAggScore: observer?.aggroScore || 0,
+      observerBluffName: observer?.bluffName || "",
+      observerBluffScore: observer?.bluffScore || 0,
 
       winPct: eq.winPct,
       splitPct: eq.splitPct,
