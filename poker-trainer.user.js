@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.8
+// @version      3.9.9
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -124,6 +124,7 @@
     const toCall = state.toCall || 0;
     const prevToCall = prev?.toCall || 0;
     const win = typeof state.winPct === "number" ? state.winPct : null;
+    const heroTurn = !!state.heroTurn;
 
     if (prev && act && prevAct && act !== prevAct) {
       if (/^FOLD/i.test(act) && /(CHECK|CALL)/i.test(prevAct)) {
@@ -137,6 +138,10 @@
       }
     }
 
+    if (!heroTurn && prev && act && prevAct && act !== prevAct) {
+      return { text: "Not your turn yet. Advice can swing.", tone: "mute" };
+    }
+
     if (state.callUnknown) {
       return { text: "Price is fuzzy. Playing it cautious.", tone: "warn" };
     }
@@ -145,7 +150,7 @@
       return { text: "Raise spotted. Price jumped.", tone: "warn" };
     }
 
-    if (!toCall && /^CHECK/i.test(act) && (state.boardLen || 0) >= 3 && typeof win === "number" && win < 45) {
+    if (!heroTurn && !toCall && /^CHECK/i.test(act) && (state.boardLen || 0) >= 3 && typeof win === "number" && win < 45) {
       return { text: "If they fire big, we may have to duck out.", tone: "mute" };
     }
 
@@ -153,7 +158,7 @@
       return { text: "Board pair only. Nothing special yet.", tone: "mute" };
     }
 
-    if (prev && (state.opponents || 0) >= 4 && (state.opponents || 0) > (prev.opponents || 0)) {
+    if (heroTurn && (state.boardLen || 0) >= 3 && (state.callUnknown || (state.toCall || 0) > 0) && prev && (state.opponents || 0) >= 4 && (state.opponents || 0) > (prev.opponents || 0)) {
       return { text: "Crowded pot. Tighten up.", tone: "warn" };
     }
 
@@ -696,6 +701,9 @@
     let sawCheck = false;
     let sawCall = false;
     let sawAllIn = false;
+    let sawRaise = false;
+    let sawBet = false;
+    let sawFold = false;
     let callAmount = 0;
     let allInAmount = 0;
 
@@ -710,6 +718,9 @@
         if (/^Check\b/i.test(t) || /Check\s*\/\s*Fold/i.test(t)) sawCheck = true;
         if (/Call\b/i.test(t)) sawCall = true;
         if (/All\s*In/i.test(t)) sawAllIn = true;
+        if (/^Raise\b/i.test(t)) sawRaise = true;
+        if (/^Bet\b/i.test(t)) sawBet = true;
+        if (/^Fold\b/i.test(t) || /Fold\s*\/\s*Check/i.test(t)) sawFold = true;
 
         const amounts = extractAmounts(t);
         if (amounts.length) {
@@ -729,7 +740,8 @@
 
     const amount = Math.max(callAmount, allInAmount);
     const unknown = amount <= 0 && (sawCall || sawAllIn);
-    return { amount, unknown, sawCheck, sawAllIn };
+    const heroTurn = sawCheck || sawCall || sawAllIn || sawRaise || sawBet || sawFold;
+    return { amount, unknown, sawCheck, sawCall, sawAllIn, sawRaise, sawBet, sawFold, heroTurn };
   }
 
   function findBlindsFromFeed() {
@@ -2017,6 +2029,7 @@
   }
 
   let _lastRenderedState = null;
+  let _stableRec = null;
 
   function renderHud(state) {
     const hud = ensureHud();
@@ -2043,7 +2056,7 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.8";
+      badge.textContent = "PMON v3.9.9";
       sub.textContent = "Waiting…";
       applySubTone(sub, null);
       // streetEl.textContent = "";
@@ -2077,7 +2090,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.8";
+    badge.textContent = "PMON v3.9.9";
     sub.textContent = state.titleLine || "…";
     applySubTone(sub, typeof state.winPct === "number" ? state.winPct : null);
     // streetEl.textContent = state.street || "";
@@ -2107,11 +2120,14 @@
 
     setLine(metaEl, "");
 
+    const heroTurn = !!state.heroTurn;
+    if (heroTurn && state.rec) _stableRec = { ...state.rec };
+    const displayRec = (!heroTurn && _stableRec && state.rec) ? _stableRec : state.rec;
     advEl.classList.remove("good", "warn", "mute");
-    const tone = state.rec?.tone || toneByWin(state.winPct);
+    const tone = displayRec?.tone || toneByWin(state.winPct);
     advEl.classList.add(tone === "good" ? "good" : tone === "warn" ? "warn" : "mute");
-    advEl.textContent = state.rec ? state.rec.act : "…";
-    setLine(whyEl, state.rec ? state.rec.why : "");
+    advEl.textContent = displayRec ? displayRec.act : "…";
+    setLine(whyEl, displayRec ? displayRec.why : "");
 
     const risksTxt = (state.risks && state.risks.length) ? `Board: ${state.risks.join(" · ")}` : "";
     setLine(risksEl, risksTxt);
@@ -2164,6 +2180,7 @@
       }
     }
     const spr = effStack > 0 && pot > 0 ? (effStack / pot) : 0;
+    const heroTurn = !!callInfo.heroTurn;
     const callPctStack = heroStack > 0 && toCall > 0 ? (toCall / heroStack) : 0;
     const stackText = heroStack > 0
       ? `${fmtMoney(heroStack)}${effStack > 0 && effStack !== heroStack ? ` (eff ${fmtMoney(effStack)})` : ""}`
@@ -2171,14 +2188,16 @@
     const stackInfo = { heroStack, effStack, spr, callPctStack, opponents: oppCount, callUnknown };
 
     if (hero.length !== 2) {
+      _stableRec = null;
       if (HUD.showWhenNoHero) {
         renderHud({
           // street: street(board.length),
           heroText: "",
-          boardText: board.map(c => c.txt).join(" "),
+        boardText: board.map(c => c.txt).join(" "),
           boardLen: board.length,
           titleLine: "Waiting for your hole cards…",
           winPct: null,
+        heroTurn,
           pot,
           toCall,
           callUnknown,
@@ -2199,6 +2218,7 @@
     const heroKey = hero.map(c => c.txt).join("");
     if (board.length <= 1 && heroKey && heroKey !== _handState.key) {
       _handState = { key: heroKey, vpip: false, pfr: false, folded: false, won: false, lost: false };
+      _stableRec = null;
       stats.handsPlayed = (stats.handsPlayed || 0) + 1;
       saveStats(stats);
       updateStatsUi(stats);
@@ -2231,6 +2251,7 @@
         boardText: board.map(c => c.txt).join(" "),
         boardLen: board.length,
         titleLine: `Preflop: ${preLabel}`,
+        heroTurn,
         currentHit: preLabel,
         hitCat,
         hitLabel,
@@ -2288,6 +2309,7 @@
       heroText: hero.map(c => c.txt).join(" "),
       boardText: board.map(c => c.txt).join(" "),
       boardLen: board.length,
+      heroTurn,
 
       winPct: eq.winPct,
       splitPct: eq.splitPct,
