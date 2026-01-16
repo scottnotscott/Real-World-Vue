@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.10
+// @version      3.9.11
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -833,8 +833,35 @@
     return true;
   }
 
+  function actionTypesFromText(text) {
+    const t = String(text || "");
+    const out = [];
+    if (/^Check\b/i.test(t) || /Check\s*\/\s*Fold/i.test(t)) out.push("check");
+    if (/\bCall\b/i.test(t)) out.push("call");
+    if (/\bRaise\b/i.test(t)) out.push("raise");
+    if (/\bBet\b/i.test(t)) out.push("bet");
+    if (/\bFold\b/i.test(t)) out.push("fold");
+    if (/All[-\s]*In/i.test(t)) out.push("allin");
+    return out;
+  }
+
+  function getTurnStatusText() {
+    const root = document.querySelector("div[class*='holdemWrapper'], div[class*='tableWrap'], div[id='react-root']") || document.body;
+    const candidates = [...root.querySelectorAll("div[class*='statusWrapper'], div[class*='status']")].slice(0, 20);
+    for (const el of candidates) {
+      const t = nodeText(el);
+      if (t && /(your turn|your move)/i.test(t)) return t;
+    }
+    return "";
+  }
+
+  function isHeroTurn(actions, statusText) {
+    if (Array.isArray(actions) && actions.length) return true;
+    return /(your turn|your move)/i.test(String(statusText || ""));
+  }
+
   function findToCall() {
-    const actionTextRe = /\b(Check|Call|Raise|Bet|Fold|All\s*In)\b/i;
+    const actionTextRe = /\b(Check|Call|Raise|Bet|Fold|All[-\s]*In)\b/i;
     const rootCandidates = [
       ...document.querySelectorAll(
         "div[class*='buttonsWrap'], div[class*='panelPositioner'], div[class*='betPanel'], div[class*='actionButtons'], div[class*='actions'], div[class*='actionBar'], div[id*='action']"
@@ -866,6 +893,7 @@
     let sawAllIn = false;
     let callAmount = 0;
     let allInAmount = 0;
+    const actionSet = new Set();
 
     for (const el of btns) {
       const texts = getElementTextVariants(el);
@@ -875,14 +903,17 @@
         const t = String(t0 || "").trim();
         if (!t) continue;
 
-        if (/^Check\b/i.test(t) || /Check\s*\/\s*Fold/i.test(t)) sawCheck = true;
-        if (/Call\b/i.test(t)) sawCall = true;
-        if (/All\s*In/i.test(t)) sawAllIn = true;
+        const types = actionTypesFromText(t);
+        for (const type of types) actionSet.add(type);
+
+        if (types.includes("check")) sawCheck = true;
+        if (types.includes("call")) sawCall = true;
+        if (types.includes("allin")) sawAllIn = true;
 
         const amounts = extractAmounts(t);
         if (amounts.length) {
           if (/Call\b/i.test(t)) callAmount = Math.max(callAmount, ...amounts);
-          if (/All\s*In/i.test(t)) allInAmount = Math.max(allInAmount, ...amounts);
+          if (/All[-\s]*In/i.test(t)) allInAmount = Math.max(allInAmount, ...amounts);
         }
 
         const m1 = t.match(/^Call\s*\$?([\d,]+)/i);
@@ -897,7 +928,7 @@
 
     const amount = Math.max(callAmount, allInAmount);
     const unknown = amount <= 0 && (sawCall || sawAllIn);
-    return { amount, unknown, sawCheck, sawAllIn, sawCall };
+    return { amount, unknown, sawCheck, sawAllIn, sawCall, actions: [...actionSet] };
   }
 
   function findBlindsFromFeed() {
@@ -2107,6 +2138,44 @@
     return winPct >= 65 ? "good" : winPct >= 45 ? "info" : "warn";
   }
 
+  function actionTypeFromRecAct(act) {
+    const t = String(act || "");
+    if (/ALL[-\s]*IN/i.test(t)) return "allin";
+    if (/^FOLD/i.test(t)) return "fold";
+    if (/^CHECK/i.test(t)) return "check";
+    if (/^CALL/i.test(t)) return "call";
+    if (/^BET/i.test(t)) return "bet";
+    if (/^RAISE/i.test(t)) return "raise";
+    return "";
+  }
+
+  function pickAvailableAction(actions, order) {
+    const set = new Set(actions || []);
+    for (const opt of order) {
+      if (set.has(opt)) return opt;
+    }
+    return "";
+  }
+
+  function applyActionConstraints(rec, actions) {
+    if (!rec || !Array.isArray(actions) || !actions.length) return rec;
+    const type = actionTypeFromRecAct(rec.act);
+    const orderMap = {
+      raise: ["raise", "bet", "allin", "call", "check", "fold"],
+      bet: ["bet", "raise", "allin", "call", "check", "fold"],
+      call: ["call", "check", "fold", "allin", "bet", "raise"],
+      check: ["check", "call", "fold", "allin", "bet", "raise"],
+      fold: ["fold", "check", "call", "allin", "bet", "raise"],
+      allin: ["allin", "raise", "bet", "call", "check", "fold"]
+    };
+    const chosen = pickAvailableAction(actions, orderMap[type] || orderMap.call);
+    if (!chosen || chosen === type) return rec;
+    const actLabel = chosen === "allin" ? "ALL-IN" : chosen.toUpperCase();
+    const why = rec.why ? `${rec.why} Action options limited.` : "Action options limited.";
+    const tone = chosen === "fold" ? "warn" : rec.tone;
+    return { ...rec, act: actLabel, why, tone };
+  }
+
   function wantsNextCards(dist) {
     if (!dist) return null;
     const top = dist.top?.length ? dist.top.join(" · ") : "";
@@ -2301,7 +2370,7 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.10";
+      badge.textContent = "PMON v3.9.11";
       sub.textContent = "Waiting…";
       applySubTone(sub, null);
       // streetEl.textContent = "";
@@ -2335,7 +2404,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.10";
+    badge.textContent = "PMON v3.9.11";
     sub.textContent = state.titleLine || "…";
     applySubTone(sub, typeof state.winPct === "number" ? state.winPct : null);
     // streetEl.textContent = state.street || "";
@@ -2363,13 +2432,20 @@
       setLine(confEl, state.eqConf ? `Confidence: ${state.eqConf}%` : "");
     }
 
-    setLine(metaEl, "");
-
-    advEl.classList.remove("good", "warn", "mute");
-    const tone = state.rec?.tone || toneByWin(state.winPct);
-    advEl.classList.add(tone === "good" ? "good" : tone === "warn" ? "warn" : "mute");
-    advEl.textContent = state.rec ? state.rec.act : "…";
-    setLine(whyEl, state.rec ? state.rec.why : "");
+    const showAdvice = !!state.heroTurn && !!state.rec;
+    if (!showAdvice) {
+      advEl.classList.remove("good", "warn", "mute");
+      setLine(advEl, "");
+      setLine(whyEl, "");
+      setLine(metaEl, "Waiting for your turn…");
+    } else {
+      setLine(metaEl, "");
+      advEl.classList.remove("good", "warn", "mute");
+      const tone = state.rec?.tone || toneByWin(state.winPct);
+      advEl.classList.add(tone === "good" ? "good" : tone === "warn" ? "warn" : "mute");
+      advEl.textContent = state.rec ? state.rec.act : "…";
+      setLine(whyEl, state.rec ? state.rec.why : "");
+    }
 
     const risksTxt = (state.risks && state.risks.length) ? `Board: ${state.risks.join(" · ")}` : "";
     setLine(risksEl, risksTxt);
@@ -2391,6 +2467,9 @@
     const pot = findPot();
     const callInfo = findToCall();
     const blinds = findBlindsFromFeed();
+    const actions = callInfo.actions || [];
+    const turnStatus = getTurnStatusText();
+    const heroTurn = isHeroTurn(actions, turnStatus);
 
     const profiles = loadLS(LS_PROFILES, {}) || {};
     const stats = loadStats();
@@ -2449,6 +2528,7 @@
           stackText,
           spr,
           heroFolded,
+          heroTurn: false,
           observerAggName: observer.aggName,
           observerAggScore: observer.aggScore,
           observerBluffName: observer.bluffName,
@@ -2490,7 +2570,7 @@
         _preflopCache = { key: preKey, eq: preEq, iters: preIters };
       }
       const eqConf = equityConfidence(preIters);
-      const preRec = preflopAdvice(hero, pot, toCall, stackInfo);
+      const preRec = heroTurn ? applyActionConstraints(preflopAdvice(hero, pot, toCall, stackInfo), actions) : null;
       renderHud({
         // street: st,
         heroText: hero.map(c => c.txt).join(" "),
@@ -2514,11 +2594,12 @@
         stackText,
         spr,
         heroFolded,
+        heroTurn,
         observerAggName: observer.aggName,
         observerAggScore: observer.aggScore,
         observerBluffName: observer.bluffName,
         observerBluffScore: observer.bluffScore,
-        rec: { act: preRec.act, why: preRec.why, tone: preRec.tone },
+        rec: preRec ? { act: preRec.act, why: preRec.why, tone: preRec.tone } : null,
         risks: [],
         loseTo: preEq?.loseTo || []
       });
@@ -2541,7 +2622,7 @@
     const dist = (board.length === 3 || board.length === 4) ? finalDistribution(hero, board) : null;
     const want = wantsNextCards(dist);
 
-    const rec = recommendAction(mode, st, eq.winPct, risks, dist, pot, toCall, hitCat, pairInfo, stackInfo);
+    const rec = heroTurn ? applyActionConstraints(recommendAction(mode, st, eq.winPct, risks, dist, pot, toCall, hitCat, pairInfo, stackInfo), actions) : null;
 
     const subtitleBits = [];
     subtitleBits.push(pairInfo.text ? `${currentHit} · ${pairInfo.text}` : `${currentHit}`);
@@ -2564,6 +2645,7 @@
       beats: eq.beatsAvg,
       eqConf,
       heroFolded,
+      heroTurn,
       observerAggName: observer.aggName,
       observerAggScore: observer.aggScore,
       observerBluffName: observer.bluffName,
@@ -2587,11 +2669,11 @@
 
       loseTo: eq.loseTo || [],
 
-      rec: {
+      rec: rec ? {
         act: rec.act,
         why: rec.why + (whyExtra ? ` · ${whyExtra}` : ""),
         tone: rec.tone
-      },
+      } : null,
 
       titleLine: subtitleBits.join("  |  ")
     });
