@@ -756,7 +756,18 @@
   /* ===================== TABLE INFO (POT / TO CALL / BLINDS) ===================== */
   function toInt(v) {
     if (v == null) return 0;
-    return Number(String(v).replace(/[^\d]/g, "")) || 0;
+    const raw = String(v).trim();
+    if (!raw) return 0;
+    const cleaned = raw.replace(/\$/g, "").replace(/,/g, "").trim();
+    const m = cleaned.match(/^(\d+(?:\.\d+)?)([kmb])?$/i);
+    if (m) {
+      const base = parseFloat(m[1]);
+      const suffix = (m[2] || "").toLowerCase();
+      const mult = suffix === "k" ? 1e3 : suffix === "m" ? 1e6 : suffix === "b" ? 1e9 : 1;
+      return Math.round(base * mult);
+    }
+    const digits = cleaned.replace(/[^\d]/g, "");
+    return digits ? Number(digits) : 0;
   }
 
   function getActionFeedText() {
@@ -787,12 +798,12 @@
     for (const el of candidates) {
       const t = (el && el.textContent) ? String(el.textContent) : "";
       if (!t) continue;
-      const m = t.match(/POT:\s*\$?([\d,]+)/i);
+      const m = t.match(/POT:\s*\$?([\d,.]+\s*[kmb]?)/i);
       if (m) return toInt(m[1]);
     }
     if (potEl) {
       const t = String(potEl.textContent || "");
-      const m = t.match(/POT:\s*\$?([\d,]+)/i);
+      const m = t.match(/POT:\s*\$?([\d,.]+\s*[kmb]?)/i);
       if (m) return toInt(m[1]);
     }
     return 0;
@@ -800,7 +811,7 @@
 
   function extractAmounts(text) {
     const t = String(text || "");
-    const matches = t.match(/\$[\d,]+/g) || [];
+    const matches = t.match(/\$?\d[\d,]*(?:\.\d+)?\s*[kmb]?/gi) || [];
     return matches.map(toInt).filter(n => n > 0);
   }
 
@@ -855,10 +866,16 @@
     return "";
   }
 
+  function isHeroSeatActive() {
+    const hero = getHeroSeatEl();
+    if (!hero) return false;
+    const cls = String(hero.className || "");
+    return cls.includes("active___") || /\bactive\b/i.test(cls);
+  }
+
   function isHeroTurn(actions, statusText, hasActionRoot) {
-    if (Array.isArray(actions) && actions.length) return true;
-    if (hasActionRoot) return true;
-    return /(your turn|your move|act now|your action|your decision)/i.test(String(statusText || ""));
+    if (/(your turn|your move|act now|your action|your decision)/i.test(String(statusText || ""))) return true;
+    return isHeroSeatActive();
   }
 
   function findToCall() {
@@ -922,10 +939,10 @@
           if (/All[-\s]*In/i.test(t)) allInAmount = Math.max(allInAmount, ...amounts);
         }
 
-        const m1 = t.match(/^Call\s*\$?([\d,]+)/i);
+        const m1 = t.match(/^Call\s*\$?([\d,.]+\s*[kmb]?)/i);
         if (m1) callAmount = Math.max(callAmount, toInt(m1[1]));
 
-        const m2 = t.match(/All\s*In\s*\$?([\d,]+)/i);
+        const m2 = t.match(/All\s*In\s*\$?([\d,.]+\s*[kmb]?)/i);
         if (m2) allInAmount = Math.max(allInAmount, toInt(m2[1]));
 
         if (/Call Any/i.test(t)) callAmount = 0;
@@ -945,9 +962,9 @@
     const lines = normalizeFeedLines(raw).slice(-80);
     for (const line of lines) {
       const s = String(line || "");
-      const msb = s.match(/posted\s+small\s+blind\s+\$?([\d,]+)/i);
+      const msb = s.match(/posted\s+small\s+blind\s+\$?([\d,.]+\s*[kmb]?)/i);
       if (msb) sb = Math.max(sb, toInt(msb[1]));
-      const mbb = s.match(/posted\s+big\s+blind\s+\$?([\d,]+)/i);
+      const mbb = s.match(/posted\s+big\s+blind\s+\$?([\d,.]+\s*[kmb]?)/i);
       if (mbb) bb = Math.max(bb, toInt(mbb[1]));
     }
     return { sb, bb };
@@ -1098,11 +1115,11 @@
       return { type: "street", street: norm, raw: s };
     }
 
-    const mRaiseTo = s.match(/^(.+?)\s+rais(?:ed|es)\s+\$?([\d,]+)\s+to\s+\$?([\d,]+)/i);
+    const mRaiseTo = s.match(/^(.+?)\s+rais(?:ed|es)\s+\$?([\d,.]+\s*[kmb]?)\s+to\s+\$?([\d,.]+\s*[kmb]?)/i);
     if (mRaiseTo) {
       return { type: "raise", name: mRaiseTo[1].trim(), raiseBy: toInt(mRaiseTo[2]), raiseTo: toInt(mRaiseTo[3]), raw: s };
     }
-    const mRaise = s.match(/^(.+?)\s+rais(?:ed|es)\s+to\s+\$?([\d,]+)/i);
+    const mRaise = s.match(/^(.+?)\s+rais(?:ed|es)\s+to\s+\$?([\d,.]+\s*[kmb]?)/i);
     if (mRaise) return { type: "raise", name: mRaise[1].trim(), raiseTo: toInt(mRaise[2]), raw: s };
 
     const m1 = s.match(/^(.+?)\s+(bets|calls|checks|folds)\b/i);
@@ -1337,7 +1354,7 @@
     if (!playerEl) return 0;
     const t = nodeText(playerEl);
     if (!t) return 0;
-    const matches = t.match(/\$[\d,]+/g);
+    const matches = t.match(/\$[\d,.]+[kmb]?/gi);
     if (!matches) return 0;
     let max = 0;
     for (const m of matches) max = Math.max(max, toInt(m));
