@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.11
+// @version      3.9.12
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -218,8 +218,7 @@
       if (obs) return obs;
       return null;
     }
-    if (!state.rec) return null;
-    const act = String(state.rec.act || "");
+    const act = String(state.rec?.act || "");
     const prevAct = String(prev?.rec?.act || "");
     const toCall = state.toCall || 0;
     const prevToCall = prev?.toCall || 0;
@@ -836,12 +835,13 @@
   function actionTypesFromText(text) {
     const t = String(text || "");
     const out = [];
-    if (/^Check\b/i.test(t) || /Check\s*\/\s*Fold/i.test(t)) out.push("check");
-    if (/\bCall\b/i.test(t)) out.push("call");
-    if (/\bRaise\b/i.test(t)) out.push("raise");
-    if (/\bBet\b/i.test(t)) out.push("bet");
-    if (/\bFold\b/i.test(t)) out.push("fold");
-    if (/All[-\s]*In/i.test(t)) out.push("allin");
+    const hasToken = (tokenRe) => tokenRe.test(t);
+    if (hasToken(/(?:^|[^a-z])check(?:[^a-z]|$)/i) || /Check\s*\/\s*Fold/i.test(t)) out.push("check");
+    if (hasToken(/(?:^|[^a-z])call(?:[^a-z]|$)/i)) out.push("call");
+    if (hasToken(/(?:^|[^a-z])raise(?:[^a-z]|$)/i)) out.push("raise");
+    if (hasToken(/(?:^|[^a-z])bet(?:[^a-z]|$)/i)) out.push("bet");
+    if (hasToken(/(?:^|[^a-z])fold(?:[^a-z]|$)/i)) out.push("fold");
+    if (hasToken(/(?:^|[^a-z])all[-\s]*in(?:[^a-z]|$)/i)) out.push("allin");
     return out;
   }
 
@@ -850,24 +850,26 @@
     const candidates = [...root.querySelectorAll("div[class*='statusWrapper'], div[class*='status']")].slice(0, 20);
     for (const el of candidates) {
       const t = nodeText(el);
-      if (t && /(your turn|your move)/i.test(t)) return t;
+      if (t && /(your turn|your move|act now|your action|your decision)/i.test(t)) return t;
     }
     return "";
   }
 
-  function isHeroTurn(actions, statusText) {
+  function isHeroTurn(actions, statusText, hasActionRoot) {
     if (Array.isArray(actions) && actions.length) return true;
-    return /(your turn|your move)/i.test(String(statusText || ""));
+    if (hasActionRoot) return true;
+    return /(your turn|your move|act now|your action|your decision)/i.test(String(statusText || ""));
   }
 
   function findToCall() {
-    const actionTextRe = /\b(Check|Call|Raise|Bet|Fold|All[-\s]*In)\b/i;
+    const actionTextRe = /(check|call|raise|bet|fold|all[-\s]*in)/i;
     const rootCandidates = [
       ...document.querySelectorAll(
         "div[class*='buttonsWrap'], div[class*='panelPositioner'], div[class*='betPanel'], div[class*='actionButtons'], div[class*='actions'], div[class*='actionBar'], div[id*='action']"
       )
     ];
     let actionRoot = rootCandidates.find(el => actionTextRe.test(nodeText(el)));
+    const actionRootText = actionRoot ? nodeText(actionRoot) : "";
     let btns = [
       ...(actionRoot || document).querySelectorAll("button, [role='button'], a, input[type='button'], input[type='submit']")
     ]
@@ -894,6 +896,10 @@
     let callAmount = 0;
     let allInAmount = 0;
     const actionSet = new Set();
+    if (actionRootText) {
+      const rootTypes = actionTypesFromText(actionRootText);
+      for (const type of rootTypes) actionSet.add(type);
+    }
 
     for (const el of btns) {
       const texts = getElementTextVariants(el);
@@ -928,7 +934,7 @@
 
     const amount = Math.max(callAmount, allInAmount);
     const unknown = amount <= 0 && (sawCall || sawAllIn);
-    return { amount, unknown, sawCheck, sawAllIn, sawCall, actions: [...actionSet] };
+    return { amount, unknown, sawCheck, sawAllIn, sawCall, actions: [...actionSet], hasActionRoot: !!actionRoot };
   }
 
   function findBlindsFromFeed() {
@@ -2370,7 +2376,7 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.11";
+      badge.textContent = "PMON v3.9.12";
       sub.textContent = "Waiting…";
       applySubTone(sub, null);
       // streetEl.textContent = "";
@@ -2404,7 +2410,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.11";
+    badge.textContent = "PMON v3.9.12";
     sub.textContent = state.titleLine || "…";
     applySubTone(sub, typeof state.winPct === "number" ? state.winPct : null);
     // streetEl.textContent = state.street || "";
@@ -2469,7 +2475,7 @@
     const blinds = findBlindsFromFeed();
     const actions = callInfo.actions || [];
     const turnStatus = getTurnStatusText();
-    const heroTurn = isHeroTurn(actions, turnStatus);
+    const heroTurn = isHeroTurn(actions, turnStatus, callInfo.hasActionRoot);
 
     const profiles = loadLS(LS_PROFILES, {}) || {};
     const stats = loadStats();
