@@ -39,28 +39,28 @@
     navSafePx: 0,
 
     // Overall sizing (shorter)
-    maxWidthVw: 99,
-    maxHeightVh: 44, // keep it compact vertically
-    padY: 6,
-    padX: 10,
+    maxWidthVw: 96,
+    maxHeightVh: 32, // keep it compact vertically
+    padY: 4,
+    padX: 8,
 
     // Readability
-    fontPx: 11,
-    titlePx: 13,
-    barHeightPx: 14,
+    fontPx: 10,
+    titlePx: 12,
+    barHeightPx: 12,
 
     // Show preflop summary
     showPreflop: true,
     showWhenNoHero: true
   };
 
-  const INSIGHT_SHOW_MS = 2600;
-  const INSIGHT_GAP_MS = 450;
-  const INSIGHT_DEDUPE_MS = 5000;
-  const OBSERVER_COOLDOWN_MS = 2600;
-  const OBSERVER_GUESS_CHANCE = 0.24;
-  const OBSERVER_PATTERN_CHANCE = 0.32;
-  const OBSERVER_FILLER_CHANCE = 0.28;
+  const INSIGHT_SHOW_MS = 5200;
+  const INSIGHT_GAP_MS = 800;
+  const INSIGHT_DEDUPE_MS = 5200;
+  const OBSERVER_COOLDOWN_MS = 1800;
+  const OBSERVER_GUESS_CHANCE = 0.35;
+  const OBSERVER_PATTERN_CHANCE = 0.45;
+  const OBSERVER_FILLER_CHANCE = 0.4;
 
   let _insightQueue = [];
   let _insightActive = false;
@@ -223,6 +223,28 @@
     const toCall = state.toCall || 0;
     const prevToCall = prev?.toCall || 0;
     const win = typeof state.winPct === "number" ? state.winPct : null;
+    const boardLen = state.boardLen || 0;
+    const prevBoardLen = prev?.boardLen || 0;
+    const strength = typeof state.strengthPct === "number" ? state.strengthPct : null;
+    const prevStrength = typeof prev?.strengthPct === "number" ? prev.strengthPct : null;
+
+    if (boardLen > prevBoardLen) {
+      const streetLabel = boardLen === 3 ? "Flop" : boardLen === 4 ? "Turn" : "River";
+      return { text: `${streetLabel} drops. New story starts.`, tone: "info" };
+    }
+
+    if (typeof strength === "number" && typeof prevStrength === "number") {
+      if (strength >= 70 && prevStrength < 70) {
+        return { text: "Hand strength spikes. This is your moment.", tone: "good" };
+      }
+      if (strength < 40 && prevStrength >= 40) {
+        return { text: "Strength dipped. Stay cautious.", tone: "warn" };
+      }
+    }
+
+    if ((state.outsTotal || 0) >= 12 && (prev?.outsTotal || 0) < 12) {
+      return { text: "Plenty of outs. Keep the next card in mind.", tone: "info" };
+    }
 
     if (prev && act && prevAct && act !== prevAct) {
       if (/^FOLD/i.test(act) && /(CHECK|CALL)/i.test(prevAct)) {
@@ -428,6 +450,131 @@
       if (!best || compareHands(r, best) > 0) best = r;
     }
     return best || { cat: -1, name: "NO HIT", ranks: [] };
+  }
+
+  function strengthStars(pct) {
+    if (typeof pct !== "number") return "";
+    const p = clamp(pct, 0, 100);
+    const stars = p >= 75 ? 5 : p >= 60 ? 4 : p >= 45 ? 3 : p >= 30 ? 2 : 1;
+    return "★".repeat(stars) + "☆".repeat(5 - stars);
+  }
+
+  function flushSuitFromCards(cards) {
+    const counts = {};
+    for (const c of cards || []) counts[c.suit] = (counts[c.suit] || 0) + 1;
+    const entry = Object.entries(counts).find(([, n]) => n >= 5);
+    return entry ? entry[0] : "";
+  }
+
+  function handLabelForOuts(hand, cards) {
+    if (!hand) return "";
+    const r0 = hand.ranks?.[0] || 0;
+    const r1 = hand.ranks?.[1] || 0;
+    if (hand.cat === 8) {
+      const suit = flushSuitFromCards(cards);
+      const sym = suit ? S_SYM[suit] : "";
+      return `StrFl ${R_INV[r0]}${sym}`;
+    }
+    if (hand.cat === 7) return `Quads ${R_INV[r0]}`;
+    if (hand.cat === 6) return `FH ${R_INV[r0]}/${R_INV[r1]}`;
+    if (hand.cat === 5) {
+      const suit = flushSuitFromCards(cards);
+      const sym = suit ? S_SYM[suit] : "";
+      return `Flush ${sym}`.trim();
+    }
+    if (hand.cat === 4) return `Str ${R_INV[r0]}`;
+    if (hand.cat === 3) return `Trips ${R_INV[r0]}`;
+    if (hand.cat === 2) return `2Pair ${R_INV[r0]}+${R_INV[r1]}`;
+    if (hand.cat === 1) return `Pair ${R_INV[r0]}`;
+    return hand.name || "";
+  }
+
+  function outsForNextCard(hero, board) {
+    if (!hero || hero.length < 2) return null;
+    if (!board || board.length >= 5) return null;
+    const current = bestHand(hero.concat(board));
+    const d = deck([...hero, ...board]);
+    const byLabel = {};
+    const cardsByLabel = {};
+    let totalOuts = 0;
+    for (const c of d) {
+      const nextBoard = board.concat([c]);
+      const nextBest = bestHand(hero.concat(nextBoard));
+      if (compareHands(nextBest, current) <= 0) continue;
+      totalOuts++;
+      const label = handLabelForOuts(nextBest, hero.concat(nextBoard)) || nextBest.name;
+      byLabel[label] = (byLabel[label] || 0) + 1;
+      if (!cardsByLabel[label]) cardsByLabel[label] = [];
+      if (cardsByLabel[label].length < 6) cardsByLabel[label].push(c.txt);
+    }
+    const totalCards = d.length || 0;
+    const pct = totalCards > 0 ? Math.round((totalOuts / totalCards) * 100) : 0;
+    const details = Object.entries(byLabel)
+      .map(([label, count]) => ({ label, count, cards: cardsByLabel[label] || [] }))
+      .sort((a, b) => b.count - a.count);
+    return { totalOuts, totalCards, pct, details };
+  }
+
+  function improveByRiverPct(hero, board) {
+    if (!hero || hero.length < 2) return null;
+    if (!board || board.length >= 5) return null;
+    const current = bestHand(hero.concat(board));
+    const d = deck([...hero, ...board]);
+    if (board.length === 4) {
+      let improved = 0;
+      for (const c of d) {
+        const nextBest = bestHand(hero.concat(board, [c]));
+        if (compareHands(nextBest, current) > 0) improved++;
+      }
+      return d.length ? Math.round((improved / d.length) * 100) : 0;
+    }
+    if (board.length === 3) {
+      let improved = 0;
+      let total = 0;
+      const pairs = combos(d, 2);
+      for (const pair of pairs) {
+        total++;
+        const nextBest = bestHand(hero.concat(board, pair));
+        if (compareHands(nextBest, current) > 0) improved++;
+      }
+      return total ? Math.round((improved / total) * 100) : 0;
+    }
+    return null;
+  }
+
+  function formatOutsSummary(outs, byRiverPct) {
+    if (!outs) return { summary: "", detail: "", cards: "" };
+    if (!outs.totalOuts) return { summary: "Improve: no clear outs", detail: "", cards: "" };
+    const pct = outs.pct ?? 0;
+    const riverTxt = typeof byRiverPct === "number" && byRiverPct !== pct ? ` · By river ${byRiverPct}%` : "";
+    const summary = `Outs: ${outs.totalOuts}/${outs.totalCards} (${pct}%)${riverTxt}`;
+    const topDetails = outs.details.slice(0, 3).map(d => `${d.label} ${d.count}`).join(" · ");
+    const topCards = outs.details.flatMap(d => d.cards || []).slice(0, 10).join(" ");
+    return {
+      summary,
+      detail: topDetails ? `Improve to: ${topDetails}` : "",
+      cards: topCards ? `Cards: ${topCards}` : ""
+    };
+  }
+
+  function handStrengthVsRandom(hero, board) {
+    if (!hero || hero.length < 2 || !board || board.length < 3) return null;
+    const heroBest = bestHand(hero.concat(board));
+    const d = deck([...hero, ...board]);
+    if (d.length < 2) return null;
+    let win = 0;
+    let tie = 0;
+    let total = 0;
+    const pairs = combos(d, 2);
+    for (const opp of pairs) {
+      total++;
+      const oppBest = bestHand(opp.concat(board));
+      const cmp = compareHands(heroBest, oppBest);
+      if (cmp > 0) win++;
+      else if (cmp === 0) tie++;
+    }
+    const pct = total ? Math.round(((win + tie * 0.5) / total) * 100) : 0;
+    return { pct, win, tie, total };
   }
 
   /* ===================== MONTE CARLO ===================== */
@@ -695,7 +842,7 @@
   }
 
   function pairContext(hero, board) {
-    if (!hero || hero.length < 2) return { text: "", boardOnly: false, boardPaired: false };
+    if (!hero || hero.length < 2) return { text: "", boardOnly: false, boardPaired: false, tier: "", pairRank: 0 };
 
     const boardCounts = rankCounts(board);
     const boardRanks = Object.keys(boardCounts).map(Number);
@@ -710,6 +857,9 @@
     const heroPairsBoard = !!(boardCounts[h1] || boardCounts[h2]);
     const boardOnly = boardPaired && !pocketPair && !heroPairsBoard;
     const maxBoard = board.length ? Math.max(...board.map(c => c.rank)) : 0;
+    const minBoard = board.length ? Math.min(...board.map(c => c.rank)) : 0;
+    let tier = "";
+    let pairRank = 0;
 
     if (boardOnly) {
       let text = "Board pair only";
@@ -717,40 +867,44 @@
       else if (boardTripsRank && boardPairRanks.length) text = "Board full house only";
       else if (boardTripsRank) text = "Board trips only";
       else if (boardPairRanks.length >= 2) text = "Board two pair only";
-      return { text, boardOnly, boardPaired };
+      tier = "board";
+      return { text, boardOnly, boardPaired, tier, pairRank };
     }
 
     if (pocketPair) {
       const boardMatch = boardCounts[pocketPair] || 0;
-      if (boardMatch >= 2) return { text: `Quads (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired };
-      if (boardMatch === 1) return { text: `Set (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired };
-      if (boardTripsRank) return { text: `Full house (${R_INV[boardTripsRank]}s over ${R_INV[pocketPair]}s)`, boardOnly, boardPaired };
-      if (boardPairRanks.length) return { text: `Two pair (${R_INV[pocketPair]} + board)`, boardOnly, boardPaired };
-      if (pocketPair > maxBoard) return { text: `Overpair (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired };
-      if (pocketPair < maxBoard) return { text: `Underpair (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired };
-      return { text: `Pocket pair (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired };
+      pairRank = pocketPair;
+      if (boardMatch >= 2) { tier = "quads"; return { text: `Quads (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired, tier, pairRank }; }
+      if (boardMatch === 1) { tier = "set"; return { text: `Set (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired, tier, pairRank }; }
+      if (boardTripsRank) { tier = "fullhouse"; return { text: `Full house (${R_INV[boardTripsRank]}s over ${R_INV[pocketPair]}s)`, boardOnly, boardPaired, tier, pairRank }; }
+      if (boardPairRanks.length) { tier = "two pair"; return { text: `Two pair (${R_INV[pocketPair]} + board)`, boardOnly, boardPaired, tier, pairRank }; }
+      if (pocketPair > maxBoard) { tier = "overpair"; return { text: `Overpair (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired, tier, pairRank }; }
+      if (pocketPair < maxBoard) { tier = "underpair"; return { text: `Underpair (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired, tier, pairRank }; }
+      tier = "pair";
+      return { text: `Pocket pair (${R_INV[pocketPair]}${R_INV[pocketPair]})`, boardOnly, boardPaired, tier, pairRank };
     }
 
     if (heroPairsBoard) {
       const pairRank = boardCounts[h1] ? h1 : h2;
       const kicker = (h1 === pairRank) ? h2 : h1;
       const boardMatch = boardCounts[pairRank] || 0;
+      tier = pairRank === maxBoard ? "top" : pairRank === minBoard ? "bottom" : "middle";
       if (boardMatch >= 2) {
-        if (boardMatch >= 3) return { text: `Quads (${R_INV[pairRank]})`, boardOnly, boardPaired };
-        return { text: `Trips (${R_INV[pairRank]})`, boardOnly, boardPaired };
+        if (boardMatch >= 3) return { text: `Quads (${R_INV[pairRank]})`, boardOnly, boardPaired, tier: "quads", pairRank };
+        return { text: `Trips (${R_INV[pairRank]})`, boardOnly, boardPaired, tier: "trips", pairRank };
       }
       if (boardTripsRank && boardTripsRank !== pairRank) {
-        return { text: `Full house (${R_INV[boardTripsRank]}s over ${R_INV[pairRank]}s)`, boardOnly, boardPaired };
+        return { text: `Full house (${R_INV[boardTripsRank]}s over ${R_INV[pairRank]}s)`, boardOnly, boardPaired, tier: "fullhouse", pairRank };
       }
       if (boardPairRanks.length && !boardPairRanks.includes(pairRank)) {
-        return { text: `Two pair (${R_INV[pairRank]} + board)`, boardOnly, boardPaired };
+        return { text: `Two pair (${R_INV[pairRank]} + board)`, boardOnly, boardPaired, tier: "two pair", pairRank };
       }
       const pairedNote = boardPaired ? " on paired board" : "";
-      if (pairRank === maxBoard) return { text: `Top pair (k ${R_INV[kicker]})${pairedNote}`, boardOnly, boardPaired };
-      return { text: `Pair (${R_INV[pairRank]})${pairedNote}`, boardOnly, boardPaired };
+      if (pairRank === maxBoard) return { text: `Top pair (k ${R_INV[kicker]})${pairedNote}`, boardOnly, boardPaired, tier: "top", pairRank };
+      return { text: `Pair (${R_INV[pairRank]})${pairedNote}`, boardOnly, boardPaired, tier, pairRank };
     }
 
-    return { text: "", boardOnly, boardPaired };
+    return { text: "", boardOnly, boardPaired, tier, pairRank };
   }
 
   /* ===================== TABLE INFO (POT / TO CALL / BLINDS) ===================== */
@@ -1525,8 +1679,7 @@
         color: #fff;
         line-height: 1;
       }
-      #tp_holdem_hud .tp-clipBtn,
-      #tp_holdem_hud .tp-statsBtn{
+      #tp_holdem_hud .tp-clipBtn{
         cursor: pointer;
         font-weight: 900;
         font-size: ${HUD.fontPx}px;
@@ -1687,10 +1840,6 @@
         max-height: 70vh;
         overflow: hidden;
       }
-      #tp_holdem_hud .tp-stats{
-        right: auto;
-        left: 10px;
-      }
       #tp_holdem_hud .tp-help.is-open{ display: block; }
       #tp_holdem_hud .tp-helpHead{
         display:flex;
@@ -1726,6 +1875,12 @@
       }
       #tp_holdem_hud .tp-helpItem{ margin-top: 6px; }
       #tp_holdem_hud .tp-helpTerm{ font-weight: 900; }
+      #tp_holdem_hud .tp-stars{
+        color: #ffd36a;
+        letter-spacing: 0.8px;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+        margin-left: 4px;
+      }
 
       /* Advice card: wrap text so it stays INSIDE the pill */
       #tp_holdem_hud .tp-card.tp-advice{
@@ -1765,10 +1920,10 @@
         background: linear-gradient(90deg, rgba(255,255,255,0.18), rgba(255,255,255,0.03));
       }
       #tp_holdem_hud .tp-risk{
-        color: #ffbdbd;
+        color: #f3d48a;
       }
       #tp_holdem_hud .tp-lose{
-        color: #ffc7c7;
+        color: #b6e3ff;
       }
 
       /* Glow/pulse on strong hits */
@@ -1848,7 +2003,6 @@
           <div class="tp-sub" id="tp_sub">Loading…</div>
           <button class="tp-hideBtn" id="tp_hide_btn" type="button" title="Hide (10s)">🗿</button>
           <button class="tp-clipBtn" id="tp_clip_btn" type="button" title="Copy page scan">📋</button>
-          <button class="tp-statsBtn" id="tp_stats_btn" type="button" title="Stats">📈</button>
           <button class="tp-helpBtn" id="tp_help_btn" type="button" title="Help">?</button>
         </div>
 
@@ -1865,9 +2019,10 @@
           </div>
 
           <div class="tp-card">
-            <h4>Chances</h4>
-            <div class="tp-line" id="tp_win">Win: …</div>
-            <div class="tp-line tp-dim" id="tp_conf">Confidence: …</div>
+            <h4>Strength</h4>
+            <div class="tp-line" id="tp_strength">Strength: …</div>
+            <div class="tp-line tp-dim" id="tp_equity">Equity: …</div>
+            <div class="tp-line tp-dim" id="tp_improve">Improve: …</div>
           </div>
 
           <div class="tp-card tp-advice">
@@ -1913,26 +2068,6 @@
             <div class="tp-helpItem"><span class="tp-helpTerm">Confidence</span>: How stable the sim is.</div>
           </div>
         </div>
-        <div class="tp-help tp-stats" id="tp_stats" role="dialog" aria-hidden="true">
-          <div class="tp-helpHead">
-            <div>Session stats</div>
-            <button class="tp-helpClose" id="tp_stats_close" type="button" aria-label="Close">×</button>
-          </div>
-          <div class="tp-helpBody">
-            <div class="tp-helpItem"><span class="tp-helpTerm">Hands played</span>: <span id="tp_stat_hands">0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Hands scrapped</span>: <span id="tp_stat_folds">0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Hands won</span>: <span id="tp_stat_wins">0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Hands lost</span>: <span id="tp_stat_losses">0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">VPIP</span>: <span id="tp_stat_vpip">0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">PFR</span>: <span id="tp_stat_pfr">0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Total money won</span>: <span id="tp_stat_money_won">$0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Total money lost</span>: <span id="tp_stat_money_lost">$0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Biggest win</span>: <span id="tp_stat_big_win">$0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Biggest loss</span>: <span id="tp_stat_big_loss">$0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Net</span>: <span id="tp_stat_net">$0</span></div>
-            <button class="tp-helpClose" id="tp_stats_reset" type="button">Reset</button>
-          </div>
-        </div>
       </div>
     `;
     document.documentElement.appendChild(hud);
@@ -1945,13 +2080,9 @@
 
     const hideBtn = hud.querySelector("#tp_hide_btn");
     const clipBtn = hud.querySelector("#tp_clip_btn");
-    const statsBtn = hud.querySelector("#tp_stats_btn");
     const helpBtn = hud.querySelector("#tp_help_btn");
     const help = hud.querySelector("#tp_help");
     const helpClose = hud.querySelector("#tp_help_close");
-    const statsPanel = hud.querySelector("#tp_stats");
-    const statsClose = hud.querySelector("#tp_stats_close");
-    const statsReset = hud.querySelector("#tp_stats_reset");
     let hideTimer = null;
 
     const setHelpOpen = (open) => {
@@ -1975,11 +2106,6 @@
         setHelpOpen(false);
       }, { passive: false });
     }
-    const setStatsOpen = (open) => {
-      if (!statsPanel) return;
-      statsPanel.classList.toggle("is-open", open);
-      statsPanel.setAttribute("aria-hidden", open ? "false" : "true");
-    };
     if (hideBtn) {
       hideBtn.addEventListener("click", (e) => {
         e.preventDefault();
@@ -1990,29 +2116,6 @@
           hud.classList.remove("tp-hidden");
           hideTimer = null;
         }, 10000);
-      }, { passive: false });
-    }
-    if (statsBtn) {
-      statsBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const isOpen = statsPanel && statsPanel.classList.contains("is-open");
-        setStatsOpen(!isOpen);
-      }, { passive: false });
-    }
-    if (statsClose) {
-      statsClose.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setStatsOpen(false);
-      }, { passive: false });
-    }
-    if (statsReset) {
-      statsReset.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const stats = resetStats();
-        updateStatsUi(stats);
       }, { passive: false });
     }
     if (clipBtn) {
@@ -2257,9 +2360,9 @@
     return `${R_INV[hi.rank]}${R_INV[lo.rank]} ${a.suit === b.suit ? "suited" : "offsuit"}`;
   }
 
-  function recommendAction(mode, streetName, winPct, risks, dist, pot, toCall, heroCat, pairInfo, stackInfo) {
+  function recommendAction(mode, streetName, winPct, strengthPct, risks, dist, pot, toCall, heroCat, pairInfo, stackInfo) {
     const eq = typeof winPct === "number" ? winPct : 0;
-    const riskCount = (risks || []).length;
+    const strengthNow = typeof strengthPct === "number" ? strengthPct : eq;
     const boardOnly = !!(pairInfo && pairInfo.boardOnly);
     const adjustedCat = (boardOnly && heroCat <= 3) ? Math.max(0, heroCat - 1) : heroCat;
     const spr = stackInfo?.spr || 0;
@@ -2279,18 +2382,12 @@
     if (callPctStack >= 0.5 && adjustedCat < 4) callThresh += 8;
     if (callPctStack >= 0.6 && adjustedCat < 3) callThresh += 6;
     if (callPctStack >= 0.7 && adjustedCat < 4) callThresh += 10;
+    if (strengthNow < 45 && adjustedCat <= 1) callThresh += 6;
     if (spr > 0 && spr <= 2 && adjustedCat < 3) callThresh += 6;
 
     const cheapCall = !callUnknown && (callPctStack <= CHEAP_STACK_RATIO || callPctBankroll <= CHEAP_BANKROLL_RATIO);
     if (cheapCall && adjustedCat < 5) callThresh -= 6;
 
-    const canLoosen = !callUnknown && callPctStack < 0.35 && (spr === 0 || spr >= 2);
-    if (canLoosen) {
-      let loosen = 0;
-      if (riskCount === 0) loosen = 4;
-      else if (riskCount === 1) loosen = 2;
-      if (loosen) callThresh -= loosen;
-    }
     callThresh = clamp(callThresh, 0, 95);
     const bluffBase = priceNeed ?? 50;
     const bluffThresh = Math.max(0, Math.min(100, bluffBase + Math.round(mode.bluffEdge * 100)));
@@ -2334,10 +2431,16 @@
     }
 
     const improveSlack = improve >= 35;
-    if (callPctStack >= 0.75 && adjustedCat <= 1 && eq < 70 && !improveSlack) {
+    const pairTier = pairInfo?.tier || "";
+    const bottomPair = pairTier === "bottom";
+    const underPair = pairTier === "underpair";
+    if ((bottomPair || underPair) && callPctStack >= 0.5 && adjustedCat <= 2 && strengthNow < 60 && !improveSlack) {
+      return action("FOLD", "Weak pair facing a big stack chunk. Let it go.", "warn");
+    }
+    if (callPctStack >= 0.75 && adjustedCat <= 1 && strengthNow < 70 && !improveSlack) {
       return action("FOLD", "Massive stack chunk with a weak pair. Let it go.", "warn");
     }
-    if (callPctStack >= 0.6 && adjustedCat === 0 && eq < 65 && !improveSlack) {
+    if (callPctStack >= 0.6 && adjustedCat === 0 && strengthNow < 65 && !improveSlack) {
       return action("FOLD", "Big stack chunk with no made hand. Let it go.", "warn");
     }
 
@@ -2393,8 +2496,9 @@
     const hitEl = hud.querySelector("#tp_hit");
     const youEl = hud.querySelector("#tp_you");
 
-    const winEl = hud.querySelector("#tp_win");
-    const confEl = hud.querySelector("#tp_conf");
+    const strengthEl = hud.querySelector("#tp_strength");
+    const equityEl = hud.querySelector("#tp_equity");
+    const improveEl = hud.querySelector("#tp_improve");
 
     const advEl = hud.querySelector("#tp_advice");
     const whyEl = hud.querySelector("#tp_why");
@@ -2415,8 +2519,9 @@
         youEl.style.display = "none";
       }
 
-      winEl.textContent = "Win: …";
-      confEl.textContent = "Confidence: …";
+      strengthEl.textContent = "Strength: …";
+      equityEl.textContent = "Equity: …";
+      improveEl.textContent = "Improve: …";
 
       advEl.textContent = "…";
       whyEl.textContent = "";
@@ -2439,10 +2544,12 @@
 
     badge.textContent = "PMON v3.9.12";
     sub.textContent = state.titleLine || "…";
-    applySubTone(sub, typeof state.winPct === "number" ? state.winPct : null);
+    applySubTone(sub, typeof state.strengthPct === "number" ? state.strengthPct : (typeof state.winPct === "number" ? state.winPct : null));
     // streetEl.textContent = state.street || "";
 
-    const w = typeof state.winPct === "number" ? Math.max(0, Math.min(100, state.winPct)) : 0;
+    const w = typeof state.strengthPct === "number"
+      ? Math.max(0, Math.min(100, state.strengthPct))
+      : (typeof state.winPct === "number" ? Math.max(0, Math.min(100, state.winPct)) : 0);
     bar.style.width = w + "%";
 
     hitEl.textContent = state.hitText || state.hitLabel || state.currentHit || "…";
@@ -2456,14 +2563,22 @@
 
     setLine(youEl, "");
 
-    const showWin = !!state.showWin || state.boardLen >= 3;
-    if (showWin && typeof state.winPct === "number") {
-      winEl.textContent = `Win: ${state.winPct}%`;
-      setLine(confEl, `Confidence: ${state.eqConf || 0}%`);
+    const strengthPct = typeof state.strengthPct === "number" ? state.strengthPct : null;
+    const stars = state.strengthStars ? ` <span class="tp-stars">${state.strengthStars}</span>` : "";
+    if (strengthPct != null) {
+      strengthEl.innerHTML = `Strength: ${strengthPct}%${stars}`;
     } else {
-      winEl.textContent = HUD.showPreflop ? "Win: will start when cards are drawn" : "Win: …";
-      setLine(confEl, state.eqConf ? `Confidence: ${state.eqConf}%` : "");
+      strengthEl.textContent = "Strength: …";
     }
+
+    if (typeof state.winPct === "number") {
+      const confText = state.eqConf ? ` (conf ${state.eqConf}%)` : "";
+      equityEl.textContent = `Equity: ${state.winPct}%${confText}`;
+    } else {
+      equityEl.textContent = HUD.showPreflop ? "Equity: waiting for board" : "Equity: …";
+    }
+
+    setLine(improveEl, state.outsSummary || "");
 
     const showAdvice = !!state.heroTurn && !!state.rec;
     if (!showAdvice) {
@@ -2480,11 +2595,11 @@
       setLine(whyEl, state.rec ? state.rec.why : "");
     }
 
-    const risksTxt = (state.risks && state.risks.length) ? `Board: ${state.risks.join(" · ")}` : "";
-    setLine(risksEl, risksTxt);
+    const outsDetail = state.outsDetail || "";
+    setLine(risksEl, outsDetail);
 
-    const loseToTxt = (state.loseTo && state.loseTo.length) ? `Lose to: ${state.loseTo.join(" · ")}` : "";
-    setLine(loseToEl, loseToTxt);
+    const outsCards = state.outsCards || "";
+    setLine(loseToEl, outsCards);
 
     const insight = insightFromState(state, prevState);
     if (insight) queueInsight(insight.text, insight.tone);
@@ -2505,19 +2620,14 @@
     const heroTurn = isHeroTurn(actions, turnStatus, callInfo.hasActionRoot);
 
     const profiles = loadLS(LS_PROFILES, {}) || {};
-    const stats = loadStats();
     const heroNameNorm = getHeroNameNorm();
-    ingestActionFeed(profiles, heroNameNorm, stats, _handState, blinds);
+    ingestActionFeed(profiles, heroNameNorm, null, _handState, blinds);
     scoreProfiles(profiles);
     saveLS(LS_PROFILES, profiles);
-    saveStats(stats);
-    updateStatsUi(stats);
 
     positionHud();
     const opponents = getActiveOpponents(profiles);
-    const oppCount = Math.max(1, Math.min(8, opponents.length || OPPONENTS));
-    const aggBias = aggregateOpponentBias(opponents);
-    const simOppInfos = Array.from({ length: oppCount }, () => ({ bias: aggBias }));
+    const solverOppCount = 1;
     const observer = observerSnapshot(opponents);
     const heroFolded = !!_handState.folded;
     const heroStack = getHeroStack();
@@ -2578,12 +2688,8 @@
     const heroKey = hero.map(c => c.txt).join("");
     if (board.length <= 1 && heroKey && heroKey !== _handState.key) {
       _handState = { key: heroKey, vpip: false, pfr: false, folded: false, won: false, lost: false };
-      stats.handsPlayed = (stats.handsPlayed || 0) + 1;
-      saveStats(stats);
-      updateStatsUi(stats);
     }
-    const oppSig = opponentSignature(opponents);
-    const key = hero.map(c => c.txt).join("") + "|" + board.map(c => c.txt).join("") + "|" + pot + "|" + toCall + "|" + oppSig + "|" + oppCount;
+    const key = hero.map(c => c.txt).join("") + "|" + board.map(c => c.txt).join("") + "|" + pot + "|" + toCall + "|" + callUnknown;
 
     if (key === _lastKey) return;
     _lastKey = key;
@@ -2594,22 +2700,24 @@
       const hitLabel = excitementLabel(hitCat);
       const pairInfo = pairContext(hero, board);
       const hitText = hitSummary(hitCat, pairInfo);
-      const preKey = hero.map(c => c.txt).join("") + "|" + oppSig + "|" + oppCount;
+      const preKey = hero.map(c => c.txt).join("") + "|solver";
       let preEq = _preflopCache.key === preKey ? _preflopCache.eq : null;
       let preIters = _preflopCache.key === preKey ? _preflopCache.iters : 0;
       if (!preEq) {
-        preIters = PRE_ITERS + Math.round(oppCount * 12);
-        preEq = simulateEquity(hero, [], oppCount, preIters, simOppInfos);
+        preIters = PRE_ITERS;
+        preEq = simulateEquity(hero, [], solverOppCount, preIters, null);
         _preflopCache = { key: preKey, eq: preEq, iters: preIters };
       }
       const eqConf = equityConfidence(preIters);
+      const strengthPct = typeof preEq?.winPct === "number" ? preEq.winPct : null;
+      const stars = strengthStars(strengthPct);
       const preRec = heroTurn ? applyActionConstraints(preflopAdvice(hero, pot, toCall, stackInfo), actions) : null;
       renderHud({
         // street: st,
         heroText: hero.map(c => c.txt).join(" "),
         boardText: board.map(c => c.txt).join(" "),
         boardLen: board.length,
-        titleLine: `Preflop: ${preLabel}`,
+        titleLine: `Preflop: ${preLabel}${typeof strengthPct === "number" ? ` | Strength ${strengthPct}%${stars ? ` ${stars}` : ""}` : ""}`,
         currentHit: preLabel,
         hitCat,
         hitLabel,
@@ -2618,6 +2726,8 @@
         splitPct: preEq?.splitPct ?? null,
         beats: preEq?.beatsAvg ?? 0,
         eqConf,
+        strengthPct,
+        strengthStars: stars,
         showWin: true,
         pot,
         toCall,
@@ -2633,15 +2743,17 @@
         observerBluffName: observer.bluffName,
         observerBluffScore: observer.bluffScore,
         rec: preRec ? { act: preRec.act, why: preRec.why, tone: preRec.tone } : null,
-        risks: [],
-        loseTo: preEq?.loseTo || []
+        outsSummary: "Improve: waiting for flop",
+        outsDetail: "",
+        outsCards: "",
+        outsTotal: 0
       });
       return;
     }
 
     const mode = getMode();
     const iters = board.length === 3 ? ITERS : board.length === 4 ? Math.round(ITERS * 1.25) : Math.round(ITERS * 1.5);
-    const eq = simulateEquity(hero, board, oppCount, iters, simOppInfos);
+    const eq = simulateEquity(hero, board, solverOppCount, iters, null);
     const eqConf = equityConfidence(iters);
     const bestNow = bestHand(hero.concat(board));
     const currentHit = bestNow.name;
@@ -2651,15 +2763,22 @@
     const risks = boardRisks(board);
     const pairInfo = pairContext(hero, board);
     const hitText = hitSummary(hitCat, pairInfo);
+    const strength = handStrengthVsRandom(hero, board);
+    const strengthPct = typeof strength?.pct === "number" ? strength.pct : null;
+    const stars = strengthStars(strengthPct);
 
     const dist = (board.length === 3 || board.length === 4) ? finalDistribution(hero, board) : null;
     const want = wantsNextCards(dist);
+    const outs = outsForNextCard(hero, board);
+    const byRiverPct = improveByRiverPct(hero, board);
+    const outsText = formatOutsSummary(outs, byRiverPct);
 
-    const rec = heroTurn ? applyActionConstraints(recommendAction(mode, st, eq.winPct, risks, dist, pot, toCall, hitCat, pairInfo, stackInfo), actions) : null;
+    const rec = heroTurn ? applyActionConstraints(recommendAction(mode, st, eq.winPct, strengthPct, risks, dist, pot, toCall, hitCat, pairInfo, stackInfo), actions) : null;
 
     const subtitleBits = [];
     subtitleBits.push(pairInfo.text ? `${currentHit} · ${pairInfo.text}` : `${currentHit}`);
-    if (board.length >= 3 && typeof eq.winPct === "number") subtitleBits.push(`Win ${eq.winPct}%`);
+    if (typeof strengthPct === "number") subtitleBits.push(`Strength ${strengthPct}%${stars ? ` ${stars}` : ""}`);
+    if (board.length >= 3 && typeof eq.winPct === "number") subtitleBits.push(`Equity ${eq.winPct}%`);
 
     let whyExtra = "";
     if (want && (st === "Flop" || st === "Turn")) {
@@ -2677,6 +2796,8 @@
       splitPct: eq.splitPct,
       beats: eq.beatsAvg,
       eqConf,
+      strengthPct,
+      strengthStars: stars,
       heroFolded,
       heroTurn,
       observerAggName: observer.aggName,
@@ -2700,7 +2821,10 @@
       stackText,
       spr,
 
-      loseTo: eq.loseTo || [],
+      outsSummary: outsText.summary,
+      outsDetail: outsText.detail,
+      outsCards: outsText.cards,
+      outsTotal: outs?.totalOuts || 0,
 
       rec: rec ? {
         act: rec.act,
