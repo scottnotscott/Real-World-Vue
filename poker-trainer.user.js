@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA –PSA (v3.8)
 // @namespace    local.torn.poker.assist.v38.viewporttop.modes
-// @version      3.9.8
+// @version      3.9.12
 // @match        https://www.torn.com/page.php?sid=holdem*
 // @run-at       document-end
 // @grant        none
@@ -57,6 +57,10 @@
   const INSIGHT_SHOW_MS = 2600;
   const INSIGHT_GAP_MS = 450;
   const INSIGHT_DEDUPE_MS = 5000;
+  const OBSERVER_COOLDOWN_MS = 2600;
+  const OBSERVER_GUESS_CHANCE = 0.24;
+  const OBSERVER_PATTERN_CHANCE = 0.32;
+  const OBSERVER_FILLER_CHANCE = 0.28;
 
   let _insightQueue = [];
   let _insightActive = false;
@@ -64,6 +68,20 @@
   let _insightTimer = null;
   let _insightLast = { text: "", t: 0 };
   let _insightBooted = false;
+  let _observerLastAt = 0;
+
+  const OBSERVER_FILLERS = [
+    "Spectator cam: chips and chaos.",
+    "Dealer's got the popcorn ready.",
+    "Someone's telling a story. Let's see if it's fiction.",
+    "That pot's growing legs.",
+    "Backseat mode: quietly judging bets.",
+    "This table loves the turn card drama.",
+    "Feels like someone wants to fire again.",
+    "Board's spicy. Let's see who cools off.",
+    "Pressure makes diamonds... or mistakes.",
+    "Counting outs like a sportscaster."
+  ];
 
   function setInsightEl(el) {
     _insightEl = el || null;
@@ -73,6 +91,11 @@
     const t = String(tone || "").toLowerCase();
     if (t === "good" || t === "warn" || t === "info" || t === "mute" || t === "rainbow") return t;
     return "mute";
+  }
+
+  function pickOne(list) {
+    if (!Array.isArray(list) || !list.length) return "";
+    return list[Math.floor(Math.random() * list.length)];
   }
 
   function queueInsight(text, tone) {
@@ -117,9 +140,85 @@
     }, INSIGHT_SHOW_MS);
   }
 
+  function observerInsightFromState(state, prev) {
+    if (!state || !state.heroFolded) return null;
+    const now = Date.now();
+    const justFolded = state.heroFolded && !prev?.heroFolded;
+    if (justFolded) {
+      _observerLastAt = now;
+      return { text: "Fold locked in. Backseat mode on.", tone: "info" };
+    }
+    if ((now - _observerLastAt) < OBSERVER_COOLDOWN_MS) return null;
+
+    const boardLen = state.boardLen || 0;
+    const prevBoardLen = prev?.boardLen || 0;
+    if (boardLen > prevBoardLen) {
+      const streetLabel = boardLen === 3 ? "Flop" : boardLen === 4 ? "Turn" : "River";
+      _observerLastAt = now;
+      return { text: `${streetLabel} hits. Let's see who flinches.`, tone: "info" };
+    }
+
+    const pot = state.pot || 0;
+    const prevPot = prev?.pot || 0;
+    if (pot > 0 && prevPot > 0 && pot >= prevPot * 1.6) {
+      _observerLastAt = now;
+      return { text: "Pot just ballooned. Somebody's leaning in hard.", tone: "warn" };
+    }
+
+    if (Array.isArray(state.risks) && state.risks.length && Math.random() < 0.35) {
+      _observerLastAt = now;
+      return { text: `Board check: ${state.risks[0]}.`, tone: "info" };
+    }
+
+    const aggName = state.observerAggName || "";
+    const aggScore = state.observerAggScore || 0;
+    if (aggName && aggScore >= 55 && Math.random() < OBSERVER_PATTERN_CHANCE) {
+      _observerLastAt = now;
+      return { text: `${aggName} keeps pressing. Feels like another barrel.`, tone: "info" };
+    }
+
+    const bluffName = state.observerBluffName || "";
+    const bluffScore = state.observerBluffScore || 0;
+    if (bluffName && bluffScore >= 50 && Math.random() < OBSERVER_PATTERN_CHANCE) {
+      _observerLastAt = now;
+      return { text: `${bluffName} has a whiff of chaos. Could be air again.`, tone: "warn" };
+    }
+
+    if (Array.isArray(state.loseTo) && state.loseTo.length && Math.random() < OBSERVER_GUESS_CHANCE) {
+      const guessRaw = String(state.loseTo[0] || "").split(/\s+/)[0];
+      const guess = prettyCatLabel(guessRaw);
+      _observerLastAt = now;
+      return { text: `If I had to guess, someone's on a ${guess}.`, tone: "info" };
+    }
+
+    if (Array.isArray(state.risks) && state.risks.length && Math.random() < OBSERVER_GUESS_CHANCE) {
+      const risk = state.risks.find(r => /flush|straight|pair/i.test(r));
+      if (risk) {
+        const hint = /flush/i.test(risk) ? "flush" : /straight/i.test(risk) ? "straight" : "pair";
+        _observerLastAt = now;
+        return { text: `If I had to guess, someone backed into a ${hint}.`, tone: "info" };
+      }
+    }
+
+    if (Math.random() < OBSERVER_FILLER_CHANCE) {
+      const filler = pickOne(OBSERVER_FILLERS);
+      if (filler) {
+        _observerLastAt = now;
+        return { text: filler, tone: "mute" };
+      }
+    }
+
+    return null;
+  }
+
   function insightFromState(state, prev) {
-    if (!state || !state.rec) return null;
-    const act = String(state.rec.act || "");
+    if (!state) return null;
+    if (state.heroFolded) {
+      const obs = observerInsightFromState(state, prev);
+      if (obs) return obs;
+      return null;
+    }
+    const act = String(state.rec?.act || "");
     const prevAct = String(prev?.rec?.act || "");
     const toCall = state.toCall || 0;
     const prevToCall = prev?.toCall || 0;
@@ -137,7 +236,7 @@
       }
     }
 
-    if (state.callUnknown) {
+    if (state.callUnknown && (state.toCall || 0) > 0) {
       return { text: "Price is fuzzy. Playing it cautious.", tone: "warn" };
     }
 
@@ -151,10 +250,6 @@
 
     if (state.hitText && state.hitText.includes("BOARD") && !String(prev?.hitText || "").includes("BOARD")) {
       return { text: "Board pair only. Nothing special yet.", tone: "mute" };
-    }
-
-    if (prev && (state.opponents || 0) >= 4 && (state.opponents || 0) > (prev.opponents || 0)) {
-      return { text: "Crowded pot. Tighten up.", tone: "warn" };
     }
 
     if (typeof win === "number" && win >= 80 && (!prev || (prev.winPct || 0) < 80)) {
@@ -172,6 +267,17 @@
   const S_SYM = { hearts: "♥", diamonds: "♦", clubs: "♣", spades: "♠" };
 
   const CAT_NAMES = { 8: "StrFl", 7: "Quads", 6: "FH", 5: "Flush", 4: "Str", 3: "Trips", 2: "2Pair", 1: "Pair", 0: "High" };
+  const CAT_LABELS = {
+    StrFl: "straight flush",
+    Quads: "quads",
+    FH: "full house",
+    Flush: "flush",
+    Str: "straight",
+    Trips: "trips",
+    "2Pair": "two pair",
+    Pair: "pair",
+    High: "high card"
+  };
   const HAND_NAMES = {
     8: "Straight Flush",
     7: "Four of a Kind",
@@ -183,6 +289,12 @@
     1: "One Pair",
     0: "High Card"
   };
+
+  function prettyCatLabel(shortLabel) {
+    const key = String(shortLabel || "").trim();
+    if (!key) return "a hand";
+    return CAT_LABELS[key] || key.toLowerCase();
+  }
 
   function parseCard(el) {
     const cls = el && el.className ? String(el.className) : "";
@@ -347,6 +459,26 @@
     const tightness = clamp(0.25 + foldRate * 0.75 - aggN * 0.2, 0, 1);
     const aggression = clamp(aggN * 0.7 + bluffN * 0.3, 0, 1);
     return { tightness, aggression };
+  }
+
+  function aggregateOpponentBias(opponents) {
+    if (!Array.isArray(opponents) || !opponents.length) {
+      return { tightness: 0.35, aggression: 0.35 };
+    }
+    let sumT = 0;
+    let sumA = 0;
+    let count = 0;
+    for (const opp of opponents) {
+      const bias = opp?.bias || rangeBiasFromProfile(opp?.profile);
+      sumT += bias.tightness || 0;
+      sumA += bias.aggression || 0;
+      count += 1;
+    }
+    if (!count) return { tightness: 0.35, aggression: 0.35 };
+    return {
+      tightness: clamp(sumT / count, 0, 1),
+      aggression: clamp(sumA / count, 0, 1)
+    };
   }
 
   function handAcceptanceWeight(strength, bias) {
@@ -624,7 +756,18 @@
   /* ===================== TABLE INFO (POT / TO CALL / BLINDS) ===================== */
   function toInt(v) {
     if (v == null) return 0;
-    return Number(String(v).replace(/[^\d]/g, "")) || 0;
+    const raw = String(v).trim();
+    if (!raw) return 0;
+    const cleaned = raw.replace(/\$/g, "").replace(/,/g, "").trim();
+    const m = cleaned.match(/^(\d+(?:\.\d+)?)([kmb])?$/i);
+    if (m) {
+      const base = parseFloat(m[1]);
+      const suffix = (m[2] || "").toLowerCase();
+      const mult = suffix === "k" ? 1e3 : suffix === "m" ? 1e6 : suffix === "b" ? 1e9 : 1;
+      return Math.round(base * mult);
+    }
+    const digits = cleaned.replace(/[^\d]/g, "");
+    return digits ? Number(digits) : 0;
   }
 
   function getActionFeedText() {
@@ -655,12 +798,12 @@
     for (const el of candidates) {
       const t = (el && el.textContent) ? String(el.textContent) : "";
       if (!t) continue;
-      const m = t.match(/POT:\s*\$?([\d,]+)/i);
+      const m = t.match(/POT:\s*\$?([\d,.]+\s*[kmb]?)/i);
       if (m) return toInt(m[1]);
     }
     if (potEl) {
       const t = String(potEl.textContent || "");
-      const m = t.match(/POT:\s*\$?([\d,]+)/i);
+      const m = t.match(/POT:\s*\$?([\d,.]+\s*[kmb]?)/i);
       if (m) return toInt(m[1]);
     }
     return 0;
@@ -668,7 +811,7 @@
 
   function extractAmounts(text) {
     const t = String(text || "");
-    const matches = t.match(/\$[\d,]+/g) || [];
+    const matches = t.match(/\$?\d[\d,]*(?:\.\d+)?\s*[kmb]?/gi) || [];
     return matches.map(toInt).filter(n => n > 0);
   }
 
@@ -680,24 +823,100 @@
     const tip = el.getAttribute ? el.getAttribute("data-tip") : "";
     const tooltip = el.getAttribute ? el.getAttribute("data-tooltip") : "";
     const orig = el.getAttribute ? el.getAttribute("data-original-title") : "";
+    const dataLabel = el.getAttribute ? el.getAttribute("data-label") : "";
+    const dataAction = el.getAttribute ? el.getAttribute("data-action") : "";
     const dataAmount = el.getAttribute ? el.getAttribute("data-amount") : "";
     const dataValue = el.getAttribute ? el.getAttribute("data-value") : "";
     const dataBet = el.getAttribute ? el.getAttribute("data-bet") : "";
     const dataCall = el.getAttribute ? el.getAttribute("data-call") : "";
     const maybeNum = (v) => (v && /^\d[\d,]*$/.test(v) ? `$${v}` : v);
-    return [t, a, title, tip, tooltip, orig, maybeNum(dataAmount), maybeNum(dataValue), maybeNum(dataBet), maybeNum(dataCall)].filter(Boolean);
+    return [t, a, title, tip, tooltip, orig, dataLabel, dataAction, maybeNum(dataAmount), maybeNum(dataValue), maybeNum(dataBet), maybeNum(dataCall)].filter(Boolean);
+  }
+
+  function isVisibleActionEl(el) {
+    if (!el) return false;
+    if (el.disabled) return false;
+    const rects = el.getClientRects();
+    if (!rects || rects.length === 0) return false;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === "hidden" || style.display === "none" || style.opacity === "0") return false;
+    return true;
+  }
+
+  function actionTypesFromText(text) {
+    const t = String(text || "");
+    const out = [];
+    const hasToken = (tokenRe) => tokenRe.test(t);
+    if (hasToken(/(?:^|[^a-z])check(?:[^a-z]|$)/i) || /Check\s*\/\s*Fold/i.test(t)) out.push("check");
+    if (hasToken(/(?:^|[^a-z])call(?:[^a-z]|$)/i)) out.push("call");
+    if (hasToken(/(?:^|[^a-z])raise(?:[^a-z]|$)/i)) out.push("raise");
+    if (hasToken(/(?:^|[^a-z])bet(?:[^a-z]|$)/i)) out.push("bet");
+    if (hasToken(/(?:^|[^a-z])fold(?:[^a-z]|$)/i)) out.push("fold");
+    if (hasToken(/(?:^|[^a-z])all[-\s]*in(?:[^a-z]|$)/i)) out.push("allin");
+    return out;
+  }
+
+  function getTurnStatusText() {
+    const root = document.querySelector("div[class*='holdemWrapper'], div[class*='tableWrap'], div[id='react-root']") || document.body;
+    const candidates = [...root.querySelectorAll("div[class*='statusWrapper'], div[class*='status']")].slice(0, 20);
+    for (const el of candidates) {
+      const t = nodeText(el);
+      if (t && /(your turn|your move|act now|your action|your decision)/i.test(t)) return t;
+    }
+    return "";
+  }
+
+  function isHeroSeatActive() {
+    const hero = getHeroSeatEl();
+    if (!hero) return false;
+    const cls = String(hero.className || "");
+    return cls.includes("active___") || /\bactive\b/i.test(cls);
+  }
+
+  function isHeroTurn(actions, statusText, hasActionRoot) {
+    if (/(your turn|your move|act now|your action|your decision)/i.test(String(statusText || ""))) return true;
+    return isHeroSeatActive();
   }
 
   function findToCall() {
-    const btns = [
-      ...document.querySelectorAll("button, [role='button'], a, div")
-    ].slice(0, 500);
+    const actionTextRe = /(check|call|raise|bet|fold|all[-\s]*in)/i;
+    const rootCandidates = [
+      ...document.querySelectorAll(
+        "div[class*='buttonsWrap'], div[class*='panelPositioner'], div[class*='betPanel'], div[class*='actionButtons'], div[class*='actions'], div[class*='actionBar'], div[id*='action']"
+      )
+    ];
+    let actionRoot = rootCandidates.find(el => actionTextRe.test(nodeText(el)));
+    const actionRootText = actionRoot ? nodeText(actionRoot) : "";
+    let btns = [
+      ...(actionRoot || document).querySelectorAll("button, [role='button'], a, input[type='button'], input[type='submit']")
+    ]
+      .filter(isVisibleActionEl)
+      .filter(el => {
+        const texts = getElementTextVariants(el);
+        return texts.some(t => actionTextRe.test(String(t || "")));
+      });
+    if (!btns.length && actionRoot) {
+      actionRoot = null;
+      btns = [
+        ...document.querySelectorAll("button, [role='button'], a, input[type='button'], input[type='submit']")
+      ]
+        .filter(isVisibleActionEl)
+        .filter(el => {
+          const texts = getElementTextVariants(el);
+          return texts.some(t => actionTextRe.test(String(t || "")));
+        });
+    }
 
     let sawCheck = false;
     let sawCall = false;
     let sawAllIn = false;
     let callAmount = 0;
     let allInAmount = 0;
+    const actionSet = new Set();
+    if (actionRootText) {
+      const rootTypes = actionTypesFromText(actionRootText);
+      for (const type of rootTypes) actionSet.add(type);
+    }
 
     for (const el of btns) {
       const texts = getElementTextVariants(el);
@@ -707,20 +926,23 @@
         const t = String(t0 || "").trim();
         if (!t) continue;
 
-        if (/^Check\b/i.test(t) || /Check\s*\/\s*Fold/i.test(t)) sawCheck = true;
-        if (/Call\b/i.test(t)) sawCall = true;
-        if (/All\s*In/i.test(t)) sawAllIn = true;
+        const types = actionTypesFromText(t);
+        for (const type of types) actionSet.add(type);
+
+        if (types.includes("check")) sawCheck = true;
+        if (types.includes("call")) sawCall = true;
+        if (types.includes("allin")) sawAllIn = true;
 
         const amounts = extractAmounts(t);
         if (amounts.length) {
           if (/Call\b/i.test(t)) callAmount = Math.max(callAmount, ...amounts);
-          if (/All\s*In/i.test(t)) allInAmount = Math.max(allInAmount, ...amounts);
+          if (/All[-\s]*In/i.test(t)) allInAmount = Math.max(allInAmount, ...amounts);
         }
 
-        const m1 = t.match(/^Call\s*\$?([\d,]+)/i);
+        const m1 = t.match(/^Call\s*\$?([\d,.]+\s*[kmb]?)/i);
         if (m1) callAmount = Math.max(callAmount, toInt(m1[1]));
 
-        const m2 = t.match(/All\s*In\s*\$?([\d,]+)/i);
+        const m2 = t.match(/All\s*In\s*\$?([\d,.]+\s*[kmb]?)/i);
         if (m2) allInAmount = Math.max(allInAmount, toInt(m2[1]));
 
         if (/Call Any/i.test(t)) callAmount = 0;
@@ -729,7 +951,7 @@
 
     const amount = Math.max(callAmount, allInAmount);
     const unknown = amount <= 0 && (sawCall || sawAllIn);
-    return { amount, unknown, sawCheck, sawAllIn };
+    return { amount, unknown, sawCheck, sawAllIn, sawCall, actions: [...actionSet], hasActionRoot: !!actionRoot };
   }
 
   function findBlindsFromFeed() {
@@ -740,9 +962,9 @@
     const lines = normalizeFeedLines(raw).slice(-80);
     for (const line of lines) {
       const s = String(line || "");
-      const msb = s.match(/posted\s+small\s+blind\s+\$?([\d,]+)/i);
+      const msb = s.match(/posted\s+small\s+blind\s+\$?([\d,.]+\s*[kmb]?)/i);
       if (msb) sb = Math.max(sb, toInt(msb[1]));
-      const mbb = s.match(/posted\s+big\s+blind\s+\$?([\d,]+)/i);
+      const mbb = s.match(/posted\s+big\s+blind\s+\$?([\d,.]+\s*[kmb]?)/i);
       if (mbb) bb = Math.max(bb, toInt(mbb[1]));
     }
     return { sb, bb };
@@ -893,11 +1115,11 @@
       return { type: "street", street: norm, raw: s };
     }
 
-    const mRaiseTo = s.match(/^(.+?)\s+rais(?:ed|es)\s+\$?([\d,]+)\s+to\s+\$?([\d,]+)/i);
+    const mRaiseTo = s.match(/^(.+?)\s+rais(?:ed|es)\s+\$?([\d,.]+\s*[kmb]?)\s+to\s+\$?([\d,.]+\s*[kmb]?)/i);
     if (mRaiseTo) {
       return { type: "raise", name: mRaiseTo[1].trim(), raiseBy: toInt(mRaiseTo[2]), raiseTo: toInt(mRaiseTo[3]), raw: s };
     }
-    const mRaise = s.match(/^(.+?)\s+rais(?:ed|es)\s+to\s+\$?([\d,]+)/i);
+    const mRaise = s.match(/^(.+?)\s+rais(?:ed|es)\s+to\s+\$?([\d,.]+\s*[kmb]?)/i);
     if (mRaise) return { type: "raise", name: mRaise[1].trim(), raiseTo: toInt(mRaise[2]), raw: s };
 
     const m1 = s.match(/^(.+?)\s+(bets|calls|checks|folds)\b/i);
@@ -1132,7 +1354,7 @@
     if (!playerEl) return 0;
     const t = nodeText(playerEl);
     if (!t) return 0;
-    const matches = t.match(/\$[\d,]+/g);
+    const matches = t.match(/\$[\d,.]+[kmb]?/gi);
     if (!matches) return 0;
     let max = 0;
     for (const m of matches) max = Math.max(max, toInt(m));
@@ -1163,15 +1385,34 @@
     return opponents;
   }
 
+  function observerSnapshot(opponents) {
+    let aggName = "";
+    let aggScore = 0;
+    let bluffName = "";
+    let bluffScore = 0;
+    if (!Array.isArray(opponents)) return { aggName, aggScore, bluffName, bluffScore };
+    for (const opp of opponents) {
+      const pr = opp?.profile;
+      if (!pr || (pr.samples || 0) < 6) continue;
+      const aScore = pr.aggScore || 0;
+      const bScore = pr.bluffScore || 0;
+      if (aScore > aggScore) {
+        aggScore = aScore;
+        aggName = opp.name || pr.name || "";
+      }
+      if (bScore > bluffScore) {
+        bluffScore = bScore;
+        bluffName = opp.name || pr.name || "";
+      }
+    }
+    return { aggName, aggScore, bluffName, bluffScore };
+  }
+
   function opponentSignature(opponents) {
-    if (!Array.isArray(opponents) || !opponents.length) return "";
-    return opponents
-      .map(o => {
-        const t = Math.round((o.bias?.tightness || 0) * 10);
-        const a = Math.round((o.bias?.aggression || 0) * 10);
-        return `${t}${a}`;
-      })
-      .join(".");
+    const bias = aggregateOpponentBias(opponents);
+    const t = Math.round((bias?.tightness || 0) * 10);
+    const a = Math.round((bias?.aggression || 0) * 10);
+    return `${t}${a}`;
   }
 
   function getHeroStack() {
@@ -1403,6 +1644,16 @@
         letter-spacing: 0.2px;
         opacity: 0.95;
       }
+      #tp_holdem_hud .tp-card.tp-hitCard{
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+      #tp_holdem_hud .tp-card.tp-hitCard h4{ display: none; }
+      #tp_holdem_hud .tp-card.tp-hitCard #tp_hit{
+        width: 100%;
+        text-align: center;
+      }
 
       /* Default lines stay compact */
       #tp_holdem_hud .tp-line{
@@ -1433,6 +1684,8 @@
         padding: 8px 10px;
         display: none;
         box-shadow: 0 12px 26px rgba(0,0,0,0.55);
+        max-height: 70vh;
+        overflow: hidden;
       }
       #tp_holdem_hud .tp-stats{
         right: auto;
@@ -1459,6 +1712,17 @@
         font-size: ${HUD.fontPx}px;
         line-height: 1.35;
         opacity: 0.92;
+        max-height: 56vh;
+        overflow-y: auto;
+        padding-right: 4px;
+      }
+      #tp_holdem_hud .tp-helpBody::-webkit-scrollbar{ width: 6px; }
+      #tp_holdem_hud .tp-helpBody::-webkit-scrollbar-thumb{
+        background: rgba(255,255,255,0.22);
+        border-radius: 999px;
+      }
+      #tp_holdem_hud .tp-helpBody::-webkit-scrollbar-track{
+        background: rgba(255,255,255,0.06);
       }
       #tp_holdem_hud .tp-helpItem{ margin-top: 6px; }
       #tp_holdem_hud .tp-helpTerm{ font-weight: 900; }
@@ -1525,6 +1789,41 @@
         55%{ transform: translateZ(0) scale(1.02); }
         100%{ transform: translateZ(0) scale(1.0); }
       }
+      @keyframes tpHitPulse{
+        0%{ transform: scale(1); box-shadow: 0 0 0 rgba(255,255,255,0.08); }
+        55%{ transform: scale(1.03); box-shadow: 0 0 16px rgba(120,255,180,0.28); }
+        100%{ transform: scale(1); box-shadow: 0 0 0 rgba(255,255,255,0.08); }
+      }
+      @keyframes tpHitPulseBig{
+        0%{ transform: scale(1); box-shadow: 0 0 0 rgba(255,255,255,0.08); }
+        55%{ transform: scale(1.05); box-shadow: 0 0 22px rgba(180,255,255,0.45); }
+        100%{ transform: scale(1); box-shadow: 0 0 0 rgba(255,255,255,0.08); }
+      }
+      #tp_holdem_hud.tp-hit-1 .tp-card.tp-hitCard,
+      #tp_holdem_hud.tp-hit-2 .tp-card.tp-hitCard{
+        animation: tpHitPulse 1200ms ease-in-out infinite;
+      }
+      #tp_holdem_hud.tp-hit-3 .tp-card.tp-hitCard,
+      #tp_holdem_hud.tp-hit-4 .tp-card.tp-hitCard,
+      #tp_holdem_hud.tp-hit-5 .tp-card.tp-hitCard,
+      #tp_holdem_hud.tp-hit-6 .tp-card.tp-hitCard,
+      #tp_holdem_hud.tp-hit-7 .tp-card.tp-hitCard,
+      #tp_holdem_hud.tp-hit-8 .tp-card.tp-hitCard{
+        animation: tpHitPulseBig 1100ms ease-in-out infinite;
+      }
+      #tp_holdem_hud.tp-hit-3 #tp_hit,
+      #tp_holdem_hud.tp-hit-4 #tp_hit,
+      #tp_holdem_hud.tp-hit-5 #tp_hit,
+      #tp_holdem_hud.tp-hit-6 #tp_hit,
+      #tp_holdem_hud.tp-hit-7 #tp_hit,
+      #tp_holdem_hud.tp-hit-8 #tp_hit{
+        background-image: linear-gradient(90deg, #ff5f6d, #ffc371, #f6ff00, #64ff6a, #52b7ff, #a855f7, #ff5fd7);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        -webkit-text-fill-color: transparent;
+        filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
+      }
 
       /* prevent HUD blocking page scroll */
       #tp_holdem_hud .tp-wrap *{ -webkit-tap-highlight-color: transparent; }
@@ -1559,8 +1858,8 @@
         </div>
 
         <div class="tp-grid">
-          <div class="tp-card">
-            <h4>Hit</h4>
+          <div class="tp-card tp-hitCard">
+            <h4></h4>
             <div class="tp-line tp-big" id="tp_hit">…</div>
             <div class="tp-line tp-dim" id="tp_you"></div>
           </div>
@@ -1594,6 +1893,24 @@
             <div class="tp-helpItem"><span class="tp-helpTerm">Broadway</span>: A,K,Q,J,10 ranks.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Tight</span>: Plays fewer hands.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Loose</span>: Plays more hands.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Check</span>: Pass the action with no bet.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Call</span>: Match the current bet.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Bet</span>: Put chips in when no bet exists.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Raise</span>: Increase the current bet.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Fold</span>: Give up the hand.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">All-in</span>: Put all chips in the pot.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Pot</span>: Total chips in the middle.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Board</span>: Community cards.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Paired board</span>: Board has a pair.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Flush draw</span>: One card from a flush.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Straight draw</span>: One card from a straight.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Kicker</span>: Side card with a pair.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Overpair</span>: Pocket pair above the board.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Underpair</span>: Pocket pair below the board.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Set</span>: Trips made with a pocket pair.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Trips</span>: Three of a kind.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Hand ranks</span>: High card, Pair, Two pair, Trips, Straight, Flush, Full house, Quads, Straight flush.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Confidence</span>: How stable the sim is.</div>
           </div>
         </div>
         <div class="tp-help tp-stats" id="tp_stats" role="dialog" aria-hidden="true">
@@ -1608,8 +1925,8 @@
             <div class="tp-helpItem"><span class="tp-helpTerm">Hands lost</span>: <span id="tp_stat_losses">0</span></div>
             <div class="tp-helpItem"><span class="tp-helpTerm">VPIP</span>: <span id="tp_stat_vpip">0</span></div>
             <div class="tp-helpItem"><span class="tp-helpTerm">PFR</span>: <span id="tp_stat_pfr">0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Money won</span>: <span id="tp_stat_money_won">$0</span></div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Money lost</span>: <span id="tp_stat_money_lost">$0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Total money won</span>: <span id="tp_stat_money_won">$0</span></div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Total money lost</span>: <span id="tp_stat_money_lost">$0</span></div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Biggest win</span>: <span id="tp_stat_big_win">$0</span></div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Biggest loss</span>: <span id="tp_stat_big_loss">$0</span></div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Net</span>: <span id="tp_stat_net">$0</span></div>
@@ -1844,6 +2161,44 @@
     return winPct >= 65 ? "good" : winPct >= 45 ? "info" : "warn";
   }
 
+  function actionTypeFromRecAct(act) {
+    const t = String(act || "");
+    if (/ALL[-\s]*IN/i.test(t)) return "allin";
+    if (/^FOLD/i.test(t)) return "fold";
+    if (/^CHECK/i.test(t)) return "check";
+    if (/^CALL/i.test(t)) return "call";
+    if (/^BET/i.test(t)) return "bet";
+    if (/^RAISE/i.test(t)) return "raise";
+    return "";
+  }
+
+  function pickAvailableAction(actions, order) {
+    const set = new Set(actions || []);
+    for (const opt of order) {
+      if (set.has(opt)) return opt;
+    }
+    return "";
+  }
+
+  function applyActionConstraints(rec, actions) {
+    if (!rec || !Array.isArray(actions) || !actions.length) return rec;
+    const type = actionTypeFromRecAct(rec.act);
+    const orderMap = {
+      raise: ["raise", "bet", "allin", "call", "check", "fold"],
+      bet: ["bet", "raise", "allin", "call", "check", "fold"],
+      call: ["call", "check", "fold", "allin", "bet", "raise"],
+      check: ["check", "call", "fold", "allin", "bet", "raise"],
+      fold: ["fold", "check", "call", "allin", "bet", "raise"],
+      allin: ["allin", "raise", "bet", "call", "check", "fold"]
+    };
+    const chosen = pickAvailableAction(actions, orderMap[type] || orderMap.call);
+    if (!chosen || chosen === type) return rec;
+    const actLabel = chosen === "allin" ? "ALL-IN" : chosen.toUpperCase();
+    const why = rec.why ? `${rec.why} Action options limited.` : "Action options limited.";
+    const tone = chosen === "fold" ? "warn" : rec.tone;
+    return { ...rec, act: actLabel, why, tone };
+  }
+
   function wantsNextCards(dist) {
     if (!dist) return null;
     const top = dist.top?.length ? dist.top.join(" · ") : "";
@@ -1851,15 +2206,14 @@
     return { top, reach };
   }
 
-  function preflopAdvice(hero, pot, toCall, oppCount, stackInfo) {
+  function preflopAdvice(hero, pot, toCall, stackInfo) {
     const strength = holeStrength(hero[0], hero[1]);
     const strengthPct = Math.round(strength * 100);
     const shortStack = (stackInfo?.spr || 0) > 0 && (stackInfo?.spr || 0) <= 2;
     const stackAdj = (stackInfo?.callPctStack || 0) >= 0.4 || shortStack ? 0.05 : 0;
-    const multiAdj = oppCount >= 6 ? 0.1 : oppCount >= 4 ? 0.06 : oppCount >= 2 ? 0.03 : 0;
-    const openThresh = 0.58 + multiAdj + stackAdj;
-    const callThresh = 0.42 + multiAdj + stackAdj;
-    const shoveThresh = 0.75 + multiAdj;
+    const openThresh = 0.58 + stackAdj;
+    const callThresh = 0.42 + stackAdj;
+    const shoveThresh = 0.75;
     const callUnknown = !!stackInfo?.callUnknown;
     const priceNeed = callUnknown ? 50 : potOddsPct(pot, toCall);
 
@@ -1868,8 +2222,7 @@
     const pair = hero[0].rank === hero[1].rank;
     const premium = (pair && hi >= 11) || (hi >= 13 && lo >= 12);
 
-    const context = `${oppCount || "?"} opp`;
-    const baseWhy = `Preflop vs ${context}.`;
+    const baseWhy = "Preflop spot.";
 
     if (!toCall || toCall <= 0) {
       if (strength >= openThresh || premium) {
@@ -1911,7 +2264,6 @@
     const adjustedCat = (boardOnly && heroCat <= 3) ? Math.max(0, heroCat - 1) : heroCat;
     const spr = stackInfo?.spr || 0;
     const callPctStack = stackInfo?.callPctStack || 0;
-    const oppCount = stackInfo?.opponents || 0;
     const callUnknown = !!stackInfo?.callUnknown;
     const bankroll = BANKROLL_RESERVED || 0;
     const callPctBankroll = bankroll > 0 ? (toCall / bankroll) : 0;
@@ -1924,8 +2276,9 @@
     const priceNeed = callUnknown ? null : potOddsPct(pot, toCall);
 
     let callThresh = Math.max(0, Math.min(100, (priceNeed ?? 50) + Math.round(mode.callEdge * 100)));
-    if (oppCount >= 3 && adjustedCat < 4) callThresh += 4;
     if (callPctStack >= 0.5 && adjustedCat < 4) callThresh += 8;
+    if (callPctStack >= 0.6 && adjustedCat < 3) callThresh += 6;
+    if (callPctStack >= 0.7 && adjustedCat < 4) callThresh += 10;
     if (spr > 0 && spr <= 2 && adjustedCat < 3) callThresh += 6;
 
     const cheapCall = !callUnknown && (callPctStack <= CHEAP_STACK_RATIO || callPctBankroll <= CHEAP_BANKROLL_RATIO);
@@ -1936,8 +2289,7 @@
       let loosen = 0;
       if (riskCount === 0) loosen = 4;
       else if (riskCount === 1) loosen = 2;
-      if (loosen && oppCount <= 2) callThresh -= loosen;
-      else if (loosen && oppCount === 3) callThresh -= Math.max(1, Math.floor(loosen / 2));
+      if (loosen) callThresh -= loosen;
     }
     callThresh = clamp(callThresh, 0, 95);
     const bluffBase = priceNeed ?? 50;
@@ -1979,6 +2331,14 @@
         return action(`BET ${semiLabel}`, "Take a stab; you can still improve.", "info");
       }
       return action("CHECK", "No hand yet. Check if you can.", "mute");
+    }
+
+    const improveSlack = improve >= 35;
+    if (callPctStack >= 0.75 && adjustedCat <= 1 && eq < 70 && !improveSlack) {
+      return action("FOLD", "Massive stack chunk with a weak pair. Let it go.", "warn");
+    }
+    if (callPctStack >= 0.6 && adjustedCat === 0 && eq < 65 && !improveSlack) {
+      return action("FOLD", "Big stack chunk with no made hand. Let it go.", "warn");
     }
 
     if (eq >= Math.max(70, callThresh + 15)) {
@@ -2043,7 +2403,7 @@
     const loseToEl = hud.querySelector("#tp_loseTo");
 
     if (!state) {
-      badge.textContent = "PMON v3.9.8";
+      badge.textContent = "PMON v3.9.12";
       sub.textContent = "Waiting…";
       applySubTone(sub, null);
       // streetEl.textContent = "";
@@ -2077,7 +2437,7 @@
     if (cat > _lastHitCat) hud.classList.add("tp-pop");
     _lastHitCat = cat;
 
-    badge.textContent = "PMON v3.9.8";
+    badge.textContent = "PMON v3.9.12";
     sub.textContent = state.titleLine || "…";
     applySubTone(sub, typeof state.winPct === "number" ? state.winPct : null);
     // streetEl.textContent = state.street || "";
@@ -2105,13 +2465,20 @@
       setLine(confEl, state.eqConf ? `Confidence: ${state.eqConf}%` : "");
     }
 
-    setLine(metaEl, "");
-
-    advEl.classList.remove("good", "warn", "mute");
-    const tone = state.rec?.tone || toneByWin(state.winPct);
-    advEl.classList.add(tone === "good" ? "good" : tone === "warn" ? "warn" : "mute");
-    advEl.textContent = state.rec ? state.rec.act : "…";
-    setLine(whyEl, state.rec ? state.rec.why : "");
+    const showAdvice = !!state.heroTurn && !!state.rec;
+    if (!showAdvice) {
+      advEl.classList.remove("good", "warn", "mute");
+      setLine(advEl, "");
+      setLine(whyEl, "");
+      setLine(metaEl, "Waiting for your turn…");
+    } else {
+      setLine(metaEl, "");
+      advEl.classList.remove("good", "warn", "mute");
+      const tone = state.rec?.tone || toneByWin(state.winPct);
+      advEl.classList.add(tone === "good" ? "good" : tone === "warn" ? "warn" : "mute");
+      advEl.textContent = state.rec ? state.rec.act : "…";
+      setLine(whyEl, state.rec ? state.rec.why : "");
+    }
 
     const risksTxt = (state.risks && state.risks.length) ? `Board: ${state.risks.join(" · ")}` : "";
     setLine(risksEl, risksTxt);
@@ -2133,6 +2500,9 @@
     const pot = findPot();
     const callInfo = findToCall();
     const blinds = findBlindsFromFeed();
+    const actions = callInfo.actions || [];
+    const turnStatus = getTurnStatusText();
+    const heroTurn = isHeroTurn(actions, turnStatus, callInfo.hasActionRoot);
 
     const profiles = loadLS(LS_PROFILES, {}) || {};
     const stats = loadStats();
@@ -2145,7 +2515,11 @@
 
     positionHud();
     const opponents = getActiveOpponents(profiles);
-    const oppCount = opponents.length || OPPONENTS;
+    const oppCount = Math.max(1, Math.min(8, opponents.length || OPPONENTS));
+    const aggBias = aggregateOpponentBias(opponents);
+    const simOppInfos = Array.from({ length: oppCount }, () => ({ bias: aggBias }));
+    const observer = observerSnapshot(opponents);
+    const heroFolded = !!_handState.folded;
     const heroStack = getHeroStack();
     const effStack = effectiveStack(heroStack, opponents);
     let toCall = callInfo.amount || 0;
@@ -2168,7 +2542,7 @@
     const stackText = heroStack > 0
       ? `${fmtMoney(heroStack)}${effStack > 0 && effStack !== heroStack ? ` (eff ${fmtMoney(effStack)})` : ""}`
       : "$?";
-    const stackInfo = { heroStack, effStack, spr, callPctStack, opponents: oppCount, callUnknown };
+    const stackInfo = { heroStack, effStack, spr, callPctStack, callUnknown };
 
     if (hero.length !== 2) {
       if (HUD.showWhenNoHero) {
@@ -2186,7 +2560,12 @@
           bb: blinds.bb,
           stackText,
           spr,
-          opponents: oppCount
+          heroFolded,
+          heroTurn: false,
+          observerAggName: observer.aggName,
+          observerAggScore: observer.aggScore,
+          observerBluffName: observer.bluffName,
+          observerBluffScore: observer.bluffScore
         });
       } else {
         renderHud(null);
@@ -2203,7 +2582,8 @@
       saveStats(stats);
       updateStatsUi(stats);
     }
-    const key = hero.map(c => c.txt).join("") + "|" + board.map(c => c.txt).join("") + "|" + pot + "|" + toCall + "|" + oppCount;
+    const oppSig = opponentSignature(opponents);
+    const key = hero.map(c => c.txt).join("") + "|" + board.map(c => c.txt).join("") + "|" + pot + "|" + toCall + "|" + oppSig + "|" + oppCount;
 
     if (key === _lastKey) return;
     _lastKey = key;
@@ -2214,17 +2594,16 @@
       const hitLabel = excitementLabel(hitCat);
       const pairInfo = pairContext(hero, board);
       const hitText = hitSummary(hitCat, pairInfo);
-      const oppSig = opponentSignature(opponents);
-      const preKey = hero.map(c => c.txt).join("") + "|" + oppCount + "|" + oppSig;
+      const preKey = hero.map(c => c.txt).join("") + "|" + oppSig + "|" + oppCount;
       let preEq = _preflopCache.key === preKey ? _preflopCache.eq : null;
       let preIters = _preflopCache.key === preKey ? _preflopCache.iters : 0;
       if (!preEq) {
         preIters = PRE_ITERS + Math.round(oppCount * 12);
-        preEq = simulateEquity(hero, [], oppCount, preIters, opponents.length ? opponents : null);
+        preEq = simulateEquity(hero, [], oppCount, preIters, simOppInfos);
         _preflopCache = { key: preKey, eq: preEq, iters: preIters };
       }
       const eqConf = equityConfidence(preIters);
-      const preRec = preflopAdvice(hero, pot, toCall, oppCount, stackInfo);
+      const preRec = heroTurn ? applyActionConstraints(preflopAdvice(hero, pot, toCall, stackInfo), actions) : null;
       renderHud({
         // street: st,
         heroText: hero.map(c => c.txt).join(" "),
@@ -2247,8 +2626,13 @@
         bb: blinds.bb,
         stackText,
         spr,
-        opponents: oppCount,
-        rec: { act: preRec.act, why: preRec.why, tone: preRec.tone },
+        heroFolded,
+        heroTurn,
+        observerAggName: observer.aggName,
+        observerAggScore: observer.aggScore,
+        observerBluffName: observer.bluffName,
+        observerBluffScore: observer.bluffScore,
+        rec: preRec ? { act: preRec.act, why: preRec.why, tone: preRec.tone } : null,
         risks: [],
         loseTo: preEq?.loseTo || []
       });
@@ -2257,7 +2641,7 @@
 
     const mode = getMode();
     const iters = board.length === 3 ? ITERS : board.length === 4 ? Math.round(ITERS * 1.25) : Math.round(ITERS * 1.5);
-    const eq = simulateEquity(hero, board, oppCount, iters, opponents.length ? opponents : null);
+    const eq = simulateEquity(hero, board, oppCount, iters, simOppInfos);
     const eqConf = equityConfidence(iters);
     const bestNow = bestHand(hero.concat(board));
     const currentHit = bestNow.name;
@@ -2271,7 +2655,7 @@
     const dist = (board.length === 3 || board.length === 4) ? finalDistribution(hero, board) : null;
     const want = wantsNextCards(dist);
 
-    const rec = recommendAction(mode, st, eq.winPct, risks, dist, pot, toCall, hitCat, pairInfo, stackInfo);
+    const rec = heroTurn ? applyActionConstraints(recommendAction(mode, st, eq.winPct, risks, dist, pot, toCall, hitCat, pairInfo, stackInfo), actions) : null;
 
     const subtitleBits = [];
     subtitleBits.push(pairInfo.text ? `${currentHit} · ${pairInfo.text}` : `${currentHit}`);
@@ -2293,7 +2677,12 @@
       splitPct: eq.splitPct,
       beats: eq.beatsAvg,
       eqConf,
-      opponents: oppCount,
+      heroFolded,
+      heroTurn,
+      observerAggName: observer.aggName,
+      observerAggScore: observer.aggScore,
+      observerBluffName: observer.bluffName,
+      observerBluffScore: observer.bluffScore,
 
       currentHit,
       hitCat,
@@ -2313,11 +2702,11 @@
 
       loseTo: eq.loseTo || [],
 
-      rec: {
+      rec: rec ? {
         act: rec.act,
         why: rec.why + (whyExtra ? ` · ${whyExtra}` : ""),
         tone: rec.tone
-      },
+      } : null,
 
       titleLine: subtitleBits.join("  |  ")
     });
