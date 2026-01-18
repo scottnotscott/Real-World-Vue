@@ -2277,6 +2277,8 @@
 
     let callThresh = Math.max(0, Math.min(100, (priceNeed ?? 50) + Math.round(mode.callEdge * 100)));
     if (callPctStack >= 0.5 && adjustedCat < 4) callThresh += 8;
+    if (callPctStack >= 0.6 && adjustedCat < 3) callThresh += 6;
+    if (callPctStack >= 0.7 && adjustedCat < 4) callThresh += 10;
     if (spr > 0 && spr <= 2 && adjustedCat < 3) callThresh += 6;
 
     const cheapCall = !callUnknown && (callPctStack <= CHEAP_STACK_RATIO || callPctBankroll <= CHEAP_BANKROLL_RATIO);
@@ -2329,6 +2331,14 @@
         return action(`BET ${semiLabel}`, "Take a stab; you can still improve.", "info");
       }
       return action("CHECK", "No hand yet. Check if you can.", "mute");
+    }
+
+    const improveSlack = improve >= 35;
+    if (callPctStack >= 0.75 && adjustedCat <= 1 && eq < 70 && !improveSlack) {
+      return action("FOLD", "Massive stack chunk with a weak pair. Let it go.", "warn");
+    }
+    if (callPctStack >= 0.6 && adjustedCat === 0 && eq < 65 && !improveSlack) {
+      return action("FOLD", "Big stack chunk with no made hand. Let it go.", "warn");
     }
 
     if (eq >= Math.max(70, callThresh + 15)) {
