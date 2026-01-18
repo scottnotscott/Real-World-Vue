@@ -459,17 +459,6 @@
     return "★".repeat(stars) + "☆".repeat(5 - stars);
   }
 
-  function formatCardLine(hero, board) {
-    const h = Array.isArray(hero) ? hero : [];
-    const b = Array.isArray(board) ? board : [];
-    if (!h.length && !b.length) return "";
-    const heroTxt = h.map(c => `<span class="tp-cardHero">${c.txt}</span>`).join(" ");
-    const boardTxt = b.map(c => `<span class="tp-cardBoard">${c.txt}</span>`).join(" ");
-    const heroPart = heroTxt ? `You: ${heroTxt}` : "";
-    const boardPart = boardTxt ? `Board: ${boardTxt}` : "";
-    return [heroPart, boardPart].filter(Boolean).join("  |  ");
-  }
-
   function flushSuitFromCards(cards) {
     const counts = {};
     for (const c of cards || []) counts[c.suit] = (counts[c.suit] || 0) + 1;
@@ -1772,7 +1761,7 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        font-size: ${Math.max(9, Math.round(HUD.fontPx * 0.85))}px;
+        font-size: ${Math.max(9, Math.round(HUD.fontPx * 0.85) + 2)}px;
         font-weight: 700;
         letter-spacing: 0.2px;
         opacity: 0;
@@ -1917,14 +1906,6 @@
         text-shadow: 0 1px 2px rgba(0,0,0,0.6);
         margin-left: 4px;
       }
-      #tp_holdem_hud .tp-cardHero{
-        color: #ffd36a;
-        font-weight: 900;
-        text-shadow: 0 1px 2px rgba(0,0,0,0.6);
-      }
-      #tp_holdem_hud .tp-cardBoard{
-        color: #d7e8ff;
-      }
 
       /* Advice card: wrap text so it stays INSIDE the pill */
       #tp_holdem_hud .tp-card.tp-advice{
@@ -2058,8 +2039,7 @@
         <div class="tp-grid">
           <div class="tp-card tp-hitCard">
             <h4></h4>
-            <div class="tp-line tp-big" id="tp_hit">…</div>
-            <div class="tp-line tp-dim" id="tp_you"></div>
+          <div class="tp-line tp-big" id="tp_hit">…</div>
           </div>
 
           <div class="tp-card">
@@ -2085,7 +2065,6 @@
             <button class="tp-helpClose" id="tp_help_close" type="button" aria-label="Close">×</button>
           </div>
           <div class="tp-helpBody">
-            <div class="tp-helpItem"><span class="tp-helpTerm">Shove</span>: Go all-in.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Need%</span>: Minimum win % to call profitably.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">VPIP</span>: % of hands you voluntarily put chips in preflop.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">PFR</span>: % of hands you raised preflop.</div>
@@ -2093,11 +2072,8 @@
             <div class="tp-helpItem"><span class="tp-helpTerm">Tight</span>: Plays fewer hands.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Loose</span>: Plays more hands.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Check</span>: Pass the action with no bet.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Call</span>: Match the current bet.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">Bet</span>: Put chips in when no bet exists.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Raise</span>: Increase the current bet.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Fold</span>: Give up the hand.</div>
-            <div class="tp-helpItem"><span class="tp-helpTerm">All-in</span>: Put all chips in the pot.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Pot</span>: Total chips in the middle.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Board</span>: Community cards.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Paired board</span>: Board has a pair.</div>
@@ -2110,6 +2086,9 @@
             <div class="tp-helpItem"><span class="tp-helpTerm">Trips</span>: Three of a kind.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Hand ranks</span>: High card, Pair, Two pair, Trips, Straight, Flush, Full house, Quads, Straight flush.</div>
             <div class="tp-helpItem"><span class="tp-helpTerm">Confidence</span>: How stable the sim is.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Equity</span>: Your chance to win versus a random hand given the board.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Best improve</span>: The strongest hand you can hit on the next card.</div>
+            <div class="tp-helpItem"><span class="tp-helpTerm">Key ranks</span>: The most important ranks that improve your hand.</div>
           </div>
         </div>
       </div>
@@ -2535,7 +2514,6 @@
     const bar = hud.querySelector("#tp_bar");
 
     const hitEl = hud.querySelector("#tp_hit");
-    const youEl = hud.querySelector("#tp_you");
 
     const strengthEl = hud.querySelector("#tp_strength");
     const equityEl = hud.querySelector("#tp_equity");
@@ -2555,10 +2533,6 @@
       bar.style.width = "0%";
 
       hitEl.textContent = "->";
-      if (youEl) {
-        youEl.textContent = "";
-        youEl.style.display = "none";
-      }
 
       strengthEl.textContent = "Strength: …";
       equityEl.textContent = "Equity: …";
@@ -2601,17 +2575,6 @@
       el.textContent = t;
       el.style.display = t ? "" : "none";
     };
-
-    if (youEl) {
-      const cardLine = formatCardLine(state.heroCards, state.boardCards);
-      if (cardLine) {
-        youEl.innerHTML = cardLine;
-        youEl.style.display = "";
-      } else {
-        youEl.textContent = "";
-        youEl.style.display = "none";
-      }
-    }
 
     const strengthPct = typeof state.strengthPct === "number" ? state.strengthPct : null;
     const stars = state.strengthStars ? ` <span class="tp-stars">${state.strengthStars}</span>` : "";
