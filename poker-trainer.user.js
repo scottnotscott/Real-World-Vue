@@ -459,6 +459,17 @@
     return "★".repeat(stars) + "☆".repeat(5 - stars);
   }
 
+  function formatCardLine(hero, board) {
+    const h = Array.isArray(hero) ? hero : [];
+    const b = Array.isArray(board) ? board : [];
+    if (!h.length && !b.length) return "";
+    const heroTxt = h.map(c => `<span class="tp-cardHero">${c.txt}</span>`).join(" ");
+    const boardTxt = b.map(c => `<span class="tp-cardBoard">${c.txt}</span>`).join(" ");
+    const heroPart = heroTxt ? `You: ${heroTxt}` : "";
+    const boardPart = boardTxt ? `Board: ${boardTxt}` : "";
+    return [heroPart, boardPart].filter(Boolean).join("  |  ");
+  }
+
   function flushSuitFromCards(cards) {
     const counts = {};
     for (const c of cards || []) counts[c.suit] = (counts[c.suit] || 0) + 1;
@@ -473,19 +484,19 @@
     if (hand.cat === 8) {
       const suit = flushSuitFromCards(cards);
       const sym = suit ? S_SYM[suit] : "";
-      return `StrFl ${R_INV[r0]}${sym}`;
+      return `Straight flush (${R_INV[r0]}-high${sym ? ` ${sym}` : ""})`;
     }
-    if (hand.cat === 7) return `Quads ${R_INV[r0]}`;
-    if (hand.cat === 6) return `FH ${R_INV[r0]}/${R_INV[r1]}`;
+    if (hand.cat === 7) return `Quads (${R_INV[r0]})`;
+    if (hand.cat === 6) return `Full house (${R_INV[r0]} over ${R_INV[r1]})`;
     if (hand.cat === 5) {
       const suit = flushSuitFromCards(cards);
       const sym = suit ? S_SYM[suit] : "";
-      return `Flush ${sym}`.trim();
+      return `Flush${sym ? ` (${sym})` : ""}`;
     }
-    if (hand.cat === 4) return `Str ${R_INV[r0]}`;
-    if (hand.cat === 3) return `Trips ${R_INV[r0]}`;
-    if (hand.cat === 2) return `2Pair ${R_INV[r0]}+${R_INV[r1]}`;
-    if (hand.cat === 1) return `Pair ${R_INV[r0]}`;
+    if (hand.cat === 4) return `Straight (${R_INV[r0]}-high)`;
+    if (hand.cat === 3) return `Trips (${R_INV[r0]})`;
+    if (hand.cat === 2) return `Two pair (${R_INV[r0]} + ${R_INV[r1]})`;
+    if (hand.cat === 1) return `Pair (${R_INV[r0]})`;
     return hand.name || "";
   }
 
@@ -496,6 +507,8 @@
     const d = deck([...hero, ...board]);
     const byLabel = {};
     const cardsByLabel = {};
+    const rankCounts = {};
+    let bestOut = null;
     let totalOuts = 0;
     for (const c of d) {
       const nextBoard = board.concat([c]);
@@ -506,13 +519,17 @@
       byLabel[label] = (byLabel[label] || 0) + 1;
       if (!cardsByLabel[label]) cardsByLabel[label] = [];
       if (cardsByLabel[label].length < 6) cardsByLabel[label].push(c.txt);
+      rankCounts[c.rank] = (rankCounts[c.rank] || 0) + 1;
+      if (!bestOut || compareHands(nextBest, bestOut.hand) > 0) {
+        bestOut = { hand: nextBest, card: c, cards: hero.concat(nextBoard) };
+      }
     }
     const totalCards = d.length || 0;
     const pct = totalCards > 0 ? Math.round((totalOuts / totalCards) * 100) : 0;
     const details = Object.entries(byLabel)
       .map(([label, count]) => ({ label, count, cards: cardsByLabel[label] || [] }))
       .sort((a, b) => b.count - a.count);
-    return { totalOuts, totalCards, pct, details };
+    return { totalOuts, totalCards, pct, details, rankCounts, bestOut };
   }
 
   function improveByRiverPct(hero, board) {
@@ -544,16 +561,34 @@
 
   function formatOutsSummary(outs, byRiverPct) {
     if (!outs) return { summary: "", detail: "", cards: "" };
-    if (!outs.totalOuts) return { summary: "Improve: no clear outs", detail: "", cards: "" };
+    if (!outs.totalOuts) return { summary: "Improve odds: no clear outs", detail: "", cards: "" };
     const pct = outs.pct ?? 0;
     const riverTxt = typeof byRiverPct === "number" && byRiverPct !== pct ? ` · By river ${byRiverPct}%` : "";
-    const summary = `Outs: ${outs.totalOuts}/${outs.totalCards} (${pct}%)${riverTxt}`;
-    const topDetails = outs.details.slice(0, 3).map(d => `${d.label} ${d.count}`).join(" · ");
-    const topCards = outs.details.flatMap(d => d.cards || []).slice(0, 10).join(" ");
+    const summary = `Improve odds: ${outs.totalOuts}/${outs.totalCards} (${pct}%)${riverTxt}`;
+    const bestLabel = outs.bestOut?.hand ? handLabelForOuts(outs.bestOut.hand, outs.bestOut.cards) : "";
+    const detail = bestLabel ? `Best improve: ${bestLabel}` : "";
+    const rankEntries = Object.entries(outs.rankCounts || {})
+      .map(([rank, count]) => ({ rank: Number(rank), count }));
+    const primaryRank = outs.bestOut?.card?.rank || 0;
+    const rankPairs = [];
+    if (primaryRank && rankEntries.find(r => r.rank === primaryRank)) {
+      const pr = rankEntries.find(r => r.rank === primaryRank);
+      rankPairs.push(pr);
+    }
+    const fallback = rankEntries
+      .filter(r => r.rank !== primaryRank)
+      .sort((a, b) => b.count - a.count || b.rank - a.rank);
+    for (const r of fallback) {
+      if (rankPairs.length >= 2) break;
+      rankPairs.push(r);
+    }
+    const ranksText = rankPairs.length
+      ? `Key ranks: ${rankPairs.map(r => `${R_INV[r.rank] || r.rank} (${r.count})`).join(", ")}`
+      : "";
     return {
       summary,
-      detail: topDetails ? `Improve to: ${topDetails}` : "",
-      cards: topCards ? `Cards: ${topCards}` : ""
+      detail,
+      cards: ranksText
     };
   }
 
@@ -1743,6 +1778,7 @@
         opacity: 0;
         transition: opacity 260ms ease;
         text-shadow: 0 1px 2px rgba(0,0,0,0.65);
+        -webkit-text-stroke: 1px #000;
         pointer-events: none;
         padding: 0 8px;
         text-align: center;
@@ -1880,6 +1916,14 @@
         letter-spacing: 0.8px;
         text-shadow: 0 1px 2px rgba(0,0,0,0.6);
         margin-left: 4px;
+      }
+      #tp_holdem_hud .tp-cardHero{
+        color: #ffd36a;
+        font-weight: 900;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+      }
+      #tp_holdem_hud .tp-cardBoard{
+        color: #d7e8ff;
       }
 
       /* Advice card: wrap text so it stays INSIDE the pill */
@@ -2338,7 +2382,7 @@
     }
 
     if (strength >= shoveThresh && shortStack) {
-      return { act: "RAISE (ALL-IN)", why: `${baseWhy} Short stack and strong hand. Put it in.`, tone: "good", strengthPct };
+      return { act: "RAISE (ALL-IN)", why: `${baseWhy} Not much room to maneuver and a strong hand. Put it in.`, tone: "good", strengthPct };
     }
     if (strength >= openThresh || premium) {
       return { act: "RAISE", why: `${baseWhy} Strong enough to push back.`, tone: "info", strengthPct };
@@ -2397,10 +2441,7 @@
     const monster = adjustedCat >= 6;
     const strong = adjustedCat >= 4;
     const medium = adjustedCat >= 2;
-    const stackNote = callPctStack >= 0.5
-      ? "Big chunk of your stack."
-      : (spr > 0 && spr <= 2 ? "Short stacks." : "");
-    const action = (act, why, tone) => ({ act, why: stackNote ? `${why} ${stackNote}` : why, tone });
+    const action = (act, why, tone) => ({ act, why, tone });
     const heroStack = stackInfo?.heroStack || 0;
 
     const sizeBucket = monster ? 2 : strong ? 1 : 0;
@@ -2435,13 +2476,13 @@
     const bottomPair = pairTier === "bottom";
     const underPair = pairTier === "underpair";
     if ((bottomPair || underPair) && callPctStack >= 0.5 && adjustedCat <= 2 && strengthNow < 60 && !improveSlack) {
-      return action("FOLD", "Weak pair facing a big stack chunk. Let it go.", "warn");
+      return action("FOLD", "Weak pair facing a big price. Let it go.", "warn");
     }
     if (callPctStack >= 0.75 && adjustedCat <= 1 && strengthNow < 70 && !improveSlack) {
-      return action("FOLD", "Massive stack chunk with a weak pair. Let it go.", "warn");
+      return action("FOLD", "Massive price with a weak pair. Let it go.", "warn");
     }
     if (callPctStack >= 0.6 && adjustedCat === 0 && strengthNow < 65 && !improveSlack) {
-      return action("FOLD", "Big stack chunk with no made hand. Let it go.", "warn");
+      return action("FOLD", "Big price with no made hand. Let it go.", "warn");
     }
 
     if (eq >= Math.max(70, callThresh + 15)) {
@@ -2561,7 +2602,16 @@
       el.style.display = t ? "" : "none";
     };
 
-    setLine(youEl, "");
+    if (youEl) {
+      const cardLine = formatCardLine(state.heroCards, state.boardCards);
+      if (cardLine) {
+        youEl.innerHTML = cardLine;
+        youEl.style.display = "";
+      } else {
+        youEl.textContent = "";
+        youEl.style.display = "none";
+      }
+    }
 
     const strengthPct = typeof state.strengthPct === "number" ? state.strengthPct : null;
     const stars = state.strengthStars ? ` <span class="tp-stars">${state.strengthStars}</span>` : "";
@@ -2716,6 +2766,8 @@
         // street: st,
         heroText: hero.map(c => c.txt).join(" "),
         boardText: board.map(c => c.txt).join(" "),
+        heroCards: hero,
+        boardCards: board,
         boardLen: board.length,
         titleLine: `Preflop: ${preLabel}${typeof strengthPct === "number" ? ` | Strength ${strengthPct}%${stars ? ` ${stars}` : ""}` : ""}`,
         currentHit: preLabel,
@@ -2790,6 +2842,8 @@
       // street: st,
       heroText: hero.map(c => c.txt).join(" "),
       boardText: board.map(c => c.txt).join(" "),
+      heroCards: hero,
+      boardCards: board,
       boardLen: board.length,
 
       winPct: eq.winPct,
