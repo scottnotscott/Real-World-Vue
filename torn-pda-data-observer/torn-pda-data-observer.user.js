@@ -1,9 +1,11 @@
 // ==UserScript==
 // @name         Torn PDA - Data Observer
 // @namespace    local.torn.pda.dataobserver
-// @version      0.1.1
+// @version      0.1.2
 // @description  Capture DOM, WebSocket, and AJAX data on Torn pages.
 // @match        https://www.torn.com/*
+// @match        https://torn.com/*
+// @match        https://*.torn.com/*
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==
@@ -12,7 +14,7 @@
   "use strict";
 
   if (window.__tpdaDataObserver) return;
-  window.__tpdaDataObserver = { version: "0.1.1" };
+  window.__tpdaDataObserver = { version: "0.1.2" };
 
   const STORAGE_KEYS = {
     dom: "tpda_data_observer_dom_v1",
@@ -91,7 +93,7 @@
 
   function updateCount(key, count) {
     state.counts[key] = count;
-    if (state.ui.counts?.[key]) {
+    if (state.ui.counts && state.ui.counts[key]) {
       state.ui.counts[key].textContent = String(count);
     }
   }
@@ -131,7 +133,7 @@
   }
 
   function cssEscape(value) {
-    if (window.CSS?.escape) return window.CSS.escape(value);
+    if (window.CSS && window.CSS.escape) return window.CSS.escape(value);
     return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
   }
 
@@ -163,7 +165,7 @@
 
   function readAttributes(el) {
     const attrs = {};
-    if (!el?.attributes) return attrs;
+    if (!el || !el.attributes) return attrs;
     Array.from(el.attributes).forEach(attr => {
       attrs[attr.name] = attr.value;
     });
@@ -172,11 +174,11 @@
 
   function snapshotElement(el) {
     return {
-      tag: el?.tagName ? el.tagName.toLowerCase() : "",
-      id: el?.id || "",
-      className: el?.className || "",
-      html: truncate(el?.outerHTML || "", MAX_TEXT.html),
-      text: truncate(el?.textContent || "", MAX_TEXT.text),
+      tag: el && el.tagName ? el.tagName.toLowerCase() : "",
+      id: el && el.id ? el.id : "",
+      className: el && el.className ? el.className : "",
+      html: truncate(el && el.outerHTML ? el.outerHTML : "", MAX_TEXT.html),
+      text: truncate(el && el.textContent ? el.textContent : "", MAX_TEXT.text),
       attributes: readAttributes(el)
     };
   }
@@ -412,10 +414,10 @@
     XMLHttpRequest.prototype.__tpdaWrapped = true;
   }
 
-  function createUi() {
-    if (document.getElementById("tpda-data-observer")) return;
-
+  function appendStyleOnce() {
+    if (document.getElementById("tpda-data-observer-style")) return;
     const style = document.createElement("style");
+    style.id = "tpda-data-observer-style";
     style.textContent = `
       #tpda-data-observer {
         position: fixed;
@@ -512,7 +514,17 @@
         display: none;
       }
     `;
-    document.head.appendChild(style);
+    const head = document.head || document.getElementsByTagName("head")[0];
+    if (head) {
+      head.appendChild(style);
+    } else if (document.documentElement) {
+      document.documentElement.appendChild(style);
+    }
+  }
+
+  function createUi() {
+    if (document.getElementById("tpda-data-observer")) return;
+    appendStyleOnce();
 
     const root = document.createElement("div");
     root.id = "tpda-data-observer";
@@ -568,7 +580,13 @@
       </div>
     `;
 
-    document.body.appendChild(root);
+    if (document.body) {
+      document.body.appendChild(root);
+    } else if (document.documentElement) {
+      document.documentElement.appendChild(root);
+    } else {
+      return;
+    }
 
     state.ui.root = root;
     state.ui.counts = {
@@ -622,7 +640,7 @@
   }
 
   function showOverlayForElement(el) {
-    if (!state.hoverOverlay || !el?.getBoundingClientRect) return;
+    if (!state.hoverOverlay || !el || !el.getBoundingClientRect) return;
     const rect = el.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) {
       state.hoverOverlay.style.display = "none";
@@ -646,24 +664,24 @@
   }
 
   function getEventPoint(event) {
-    if (event?.touches?.length) {
+    if (event && event.touches && event.touches.length) {
       return { x: event.touches[0].clientX, y: event.touches[0].clientY };
     }
-    if (typeof event?.clientX === "number") {
+    if (event && typeof event.clientX === "number") {
       return { x: event.clientX, y: event.clientY };
     }
     return null;
   }
 
   function getElementFromEvent(event) {
-    if (event?.target && event.target.nodeType === 1) return event.target;
+    if (event && event.target && event.target.nodeType === 1) return event.target;
     const point = getEventPoint(event);
     if (point) return document.elementFromPoint(point.x, point.y);
     return null;
   }
 
   function shouldBlockPickEvent(event) {
-    return IS_TOUCH_DEVICE || !!event?.shiftKey;
+    return IS_TOUCH_DEVICE || (event && event.shiftKey);
   }
 
   function flashOverlay(el) {
@@ -745,7 +763,7 @@
   }
 
   function isElementVisible(el) {
-    if (!el?.getBoundingClientRect) return false;
+    if (!el || !el.getBoundingClientRect) return false;
     const rect = el.getBoundingClientRect();
     if (rect.width < 2 && rect.height < 2) return false;
     if (rect.bottom < 0 || rect.right < 0) return false;
@@ -855,7 +873,7 @@
       setStatus("Nothing to copy.");
       return;
     }
-    if (navigator.clipboard?.writeText) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(() => {
         setStatus(successMessage || "Copied.");
       }).catch(() => {
@@ -899,7 +917,7 @@
       return;
     }
     const last = items[items.length - 1];
-    const text = last?.html || "";
+    const text = last && last.html ? last.html : "";
     copyText(text, "Last DOM snapshot copied.");
   }
 
@@ -964,6 +982,24 @@
     }
   }
 
+  function ensureUiMounted() {
+    if (!document.body && !document.documentElement) return;
+    const existing = document.getElementById("tpda-data-observer");
+    if (existing && existing.isConnected) return;
+    createUi();
+  }
+
+  function setupUiPersistence() {
+    if (!window.MutationObserver) return;
+    const target = document.documentElement || document.body;
+    if (!target) return;
+    const observer = new MutationObserver(() => {
+      ensureUiMounted();
+    });
+    observer.observe(target, { childList: true, subtree: true });
+    window.__tpdaDataObserver.uiObserver = observer;
+  }
+
   function bootUiWhenReady() {
     const ready = () => {
       if (!document.body) {
@@ -971,6 +1007,7 @@
         return;
       }
       createUi();
+      setupUiPersistence();
     };
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", ready, { once: true });
