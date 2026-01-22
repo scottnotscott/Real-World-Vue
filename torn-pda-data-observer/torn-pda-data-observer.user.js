@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA - Data Observer
 // @namespace    local.torn.pda.dataobserver
-// @version      0.1.0
+// @version      0.1.1
 // @description  Capture DOM, WebSocket, and AJAX data on Torn pages.
 // @match        https://www.torn.com/*
 // @run-at       document-start
@@ -12,7 +12,7 @@
   "use strict";
 
   if (window.__tpdaDataObserver) return;
-  window.__tpdaDataObserver = { version: "0.1.0" };
+  window.__tpdaDataObserver = { version: "0.1.1" };
 
   const STORAGE_KEYS = {
     dom: "tpda_data_observer_dom_v1",
@@ -22,6 +22,18 @@
 
   const MAX_ENTRIES = { dom: 250, ws: 400, ajax: 400 };
   const MAX_TEXT = { html: 4000, text: 1200, body: 3000 };
+  const AUTO_CAPTURE_LIMIT = 120;
+  const AUTO_CAPTURE_MIN_TEXT = 6;
+  const SUPPORTS_POINTER = "PointerEvent" in window;
+  const IS_TOUCH_DEVICE = (() => {
+    if (navigator.maxTouchPoints && navigator.maxTouchPoints > 0) return true;
+    if (typeof window.matchMedia === "function") {
+      return window.matchMedia("(pointer: coarse)").matches;
+    }
+    return false;
+  })();
+  const PICK_EVENT_OPTIONS = { capture: true, passive: false };
+  const AUTO_CAPTURE_SKIP_TAGS = new Set(["SCRIPT", "STYLE", "META", "LINK", "HEAD", "NOSCRIPT"]);
 
   const state = {
     pickActive: false,
@@ -29,6 +41,7 @@
     pickedElement: null,
     pickedSelector: "",
     hoverOverlay: null,
+    overlayTimer: null,
     hoverTarget: null,
     mutationObserver: null,
     watchTimer: null,
@@ -515,13 +528,14 @@
             <span class="tpda-count" data-count="dom">0</span>
           </div>
           <div class="tpda-actions">
-            <button class="tpda-btn" data-action="pick">Pick element</button>
+            <button class="tpda-btn" data-action="pick">Pick/tap element</button>
             <button class="tpda-btn" data-action="watch">Watch selected</button>
+            <button class="tpda-btn" data-action="auto-capture">Auto capture visible</button>
             <button class="tpda-btn" data-action="copy-last">Copy last</button>
             <button class="tpda-btn" data-action="copy-dom">Copy log</button>
             <button class="tpda-btn" data-action="clear-dom">Clear</button>
           </div>
-          <div class="tpda-note">Shift+click prevents the page click while picking.</div>
+          <div class="tpda-note">Pick mode blocks page taps on mobile. Shift+click blocks page actions on desktop.</div>
           <div class="tpda-selected" data-role="selected">Selected: none</div>
         </div>
         <div class="tpda-section">
@@ -627,32 +641,83 @@
     }
   }
 
+  function isPickerUiElement(el) {
+    return !!(el && state.ui.root && (el === state.ui.root || state.ui.root.contains(el)));
+  }
+
+  function getEventPoint(event) {
+    if (event?.touches?.length) {
+      return { x: event.touches[0].clientX, y: event.touches[0].clientY };
+    }
+    if (typeof event?.clientX === "number") {
+      return { x: event.clientX, y: event.clientY };
+    }
+    return null;
+  }
+
+  function getElementFromEvent(event) {
+    if (event?.target && event.target.nodeType === 1) return event.target;
+    const point = getEventPoint(event);
+    if (point) return document.elementFromPoint(point.x, point.y);
+    return null;
+  }
+
+  function shouldBlockPickEvent(event) {
+    return IS_TOUCH_DEVICE || !!event?.shiftKey;
+  }
+
+  function flashOverlay(el) {
+    if (!state.hoverOverlay) return;
+    showOverlayForElement(el);
+    if (state.overlayTimer) clearTimeout(state.overlayTimer);
+    state.overlayTimer = setTimeout(() => {
+      hideOverlay();
+      state.overlayTimer = null;
+    }, 900);
+  }
+
   function startPicking() {
     if (state.pickActive) return;
     state.pickActive = true;
     ensureHoverOverlay();
-    document.addEventListener("mousemove", handlePickMove, true);
-    document.addEventListener("click", handlePickClick, true);
+    if (SUPPORTS_POINTER) {
+      document.addEventListener("pointermove", handlePickMove, PICK_EVENT_OPTIONS);
+      document.addEventListener("pointerdown", handlePickSelect, PICK_EVENT_OPTIONS);
+    } else {
+      document.addEventListener("mousemove", handlePickMove, true);
+      document.addEventListener("click", handlePickSelect, true);
+      document.addEventListener("touchstart", handlePickSelect, PICK_EVENT_OPTIONS);
+    }
     document.addEventListener("keydown", handlePickKey, true);
-    setButtonState(state.ui.pickButton, true, "Picking...", "Pick element");
-    setStatus("Pick mode on. Click an element to log it.");
+    setButtonState(state.ui.pickButton, true, "Picking...", "Pick/tap element");
+    setStatus(IS_TOUCH_DEVICE ? "Pick mode on. Tap an element to log it." : "Pick mode on. Click an element to log it.");
   }
 
   function stopPicking() {
     if (!state.pickActive) return;
     state.pickActive = false;
-    document.removeEventListener("mousemove", handlePickMove, true);
-    document.removeEventListener("click", handlePickClick, true);
+    if (SUPPORTS_POINTER) {
+      document.removeEventListener("pointermove", handlePickMove, PICK_EVENT_OPTIONS);
+      document.removeEventListener("pointerdown", handlePickSelect, PICK_EVENT_OPTIONS);
+    } else {
+      document.removeEventListener("mousemove", handlePickMove, true);
+      document.removeEventListener("click", handlePickSelect, true);
+      document.removeEventListener("touchstart", handlePickSelect, PICK_EVENT_OPTIONS);
+    }
     document.removeEventListener("keydown", handlePickKey, true);
     hideOverlay();
-    setButtonState(state.ui.pickButton, false, "Picking...", "Pick element");
+    if (state.overlayTimer) {
+      clearTimeout(state.overlayTimer);
+      state.overlayTimer = null;
+    }
+    setButtonState(state.ui.pickButton, false, "Picking...", "Pick/tap element");
     setStatus("Pick mode off.");
   }
 
   function handlePickMove(event) {
     if (!state.pickActive) return;
-    const target = event.target;
-    if (!target || state.ui.root?.contains(target)) {
+    const target = getElementFromEvent(event);
+    if (!target || isPickerUiElement(target)) {
       hideOverlay();
       return;
     }
@@ -660,22 +725,76 @@
     showOverlayForElement(target);
   }
 
-  function handlePickClick(event) {
+  function handlePickSelect(event) {
     if (!state.pickActive) return;
-    if (state.ui.root?.contains(event.target)) return;
-    const target = event.target;
+    const target = getElementFromEvent(event);
+    if (!target || isPickerUiElement(target)) return;
     logDomSnapshot(target, "pick", true);
-    if (event.shiftKey) {
+    flashOverlay(target);
+    if (shouldBlockPickEvent(event)) {
       event.preventDefault();
       event.stopPropagation();
     }
-    setStatus("Captured element.");
+    setStatus(IS_TOUCH_DEVICE ? "Captured element. Tap UI to exit pick mode." : "Captured element.");
   }
 
   function handlePickKey(event) {
     if (event.key === "Escape") {
       stopPicking();
     }
+  }
+
+  function isElementVisible(el) {
+    if (!el?.getBoundingClientRect) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 2 && rect.height < 2) return false;
+    if (rect.bottom < 0 || rect.right < 0) return false;
+    if (rect.top > window.innerHeight || rect.left > window.innerWidth) return false;
+    if (typeof window.getComputedStyle === "function") {
+      const style = window.getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function isInterestingElement(el) {
+    if (!el || !el.matches) return false;
+    if (el.matches("a,button,input,select,textarea,[role='button'],[onclick]")) return true;
+    const text = (el.textContent || "").trim();
+    if (text.length >= AUTO_CAPTURE_MIN_TEXT) return true;
+    if (el.attributes) {
+      for (const attr of Array.from(el.attributes)) {
+        if (attr.name.startsWith("data-") && attr.value) return true;
+      }
+    }
+    return false;
+  }
+
+  function autoCaptureVisibleElements() {
+    if (!document.body) {
+      setStatus("Page not ready yet.");
+      return;
+    }
+    const elements = Array.from(document.body.querySelectorAll("*"));
+    const seen = new Set();
+    let count = 0;
+    for (const el of elements) {
+      if (count >= AUTO_CAPTURE_LIMIT) break;
+      if (!(el instanceof Element)) continue;
+      if (AUTO_CAPTURE_SKIP_TAGS.has(el.tagName)) continue;
+      if (isPickerUiElement(el) || el.id === "tpda-data-observer-highlight") continue;
+      if (!isElementVisible(el)) continue;
+      if (!isInterestingElement(el)) continue;
+      const selector = getCssPath(el);
+      if (!selector || seen.has(selector)) continue;
+      logDomSnapshot(el, "auto-visible", false);
+      seen.add(selector);
+      count += 1;
+    }
+    const suffix = count >= AUTO_CAPTURE_LIMIT ? " (limit reached)" : "";
+    setStatus(count ? `Auto-captured ${count} elements${suffix}.` : "No visible elements matched.");
   }
 
   function startWatching() {
@@ -807,6 +926,9 @@
         break;
       case "watch":
         if (state.watchActive) stopWatching(); else startWatching();
+        break;
+      case "auto-capture":
+        autoCaptureVisibleElements();
         break;
       case "copy-last":
         copyLastDom();
