@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA - Data Observer
 // @namespace    local.torn.pda.dataobserver
-// @version      0.1.2
+// @version      0.1.3
 // @description  Capture DOM, WebSocket, and AJAX data on Torn pages.
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -13,8 +13,15 @@
 (function () {
   "use strict";
 
-  if (window.__tpdaDataObserver) return;
-  window.__tpdaDataObserver = { version: "0.1.2" };
+  const existingObserver = window.__tpdaDataObserver;
+  const existingUi = document.getElementById("tpda-data-observer");
+  if (existingObserver && existingObserver.booted && existingUi) return;
+  const observerApi = (existingObserver && typeof existingObserver === "object") ? existingObserver : {};
+  observerApi.version = "0.1.3";
+  observerApi.booted = false;
+  observerApi.errors = Array.isArray(observerApi.errors) ? observerApi.errors : [];
+  observerApi.lastBoot = Date.now();
+  window.__tpdaDataObserver = observerApi;
 
   const STORAGE_KEYS = {
     dom: "tpda_data_observer_dom_v1",
@@ -49,12 +56,86 @@
     watchTimer: null,
     lastSnapshotHtml: "",
     statusTimer: null,
+    uiPoller: null,
+    badge: null,
+    badgeTimer: null,
     counts: { dom: null, ws: null, ajax: null },
     ui: {}
   };
 
   function nowIso() {
     return new Date().toISOString();
+  }
+
+  function reportBootError(err, context) {
+    const message = (err && err.message) ? err.message : String(err);
+    const entry = {
+      time: nowIso(),
+      context: context || "boot",
+      message
+    };
+    observerApi.errors.push(entry);
+    console.warn("[TPDA Data Observer] Boot error:", entry);
+    setBadge(`TPDA Observer error: ${message}`, "error");
+  }
+
+  function ensureBadge() {
+    if (state.badge && state.badge.isConnected) return;
+    const badge = document.createElement("div");
+    badge.id = "tpda-data-observer-badge";
+    badge.textContent = "TPDA Observer booting...";
+    badge.style.cssText = [
+      "position:fixed",
+      "top:12px",
+      "left:12px",
+      "z-index:999999",
+      "background:#1f5f8f",
+      "color:#fff",
+      "font-size:11px",
+      "font-family:Arial,sans-serif",
+      "padding:6px 8px",
+      "border-radius:4px",
+      "box-shadow:0 4px 10px rgba(0,0,0,0.4)",
+      "cursor:pointer"
+    ].join(";");
+    badge.addEventListener("click", () => {
+      ensureUiMounted();
+      if (state.ui.root) {
+        state.ui.root.classList.remove("tpda-collapsed");
+        if (state.ui.toggleButton) state.ui.toggleButton.textContent = "Hide";
+      }
+    });
+    const parent = document.body || document.documentElement;
+    if (parent) {
+      parent.appendChild(badge);
+      state.badge = badge;
+    }
+  }
+
+  function setBadge(message, tone, autoHideMs) {
+    ensureBadge();
+    if (!state.badge) return;
+    if (message) state.badge.textContent = message;
+    const colors = {
+      info: "#1f5f8f",
+      ok: "#2a7d5c",
+      warn: "#946d00",
+      error: "#8f2a2a"
+    };
+    state.badge.style.background = colors[tone] || colors.info;
+    state.badge.style.display = "block";
+    if (state.badgeTimer) clearTimeout(state.badgeTimer);
+    if (autoHideMs) {
+      state.badgeTimer = setTimeout(() => {
+        hideBadge();
+      }, autoHideMs);
+    }
+  }
+
+  function hideBadge() {
+    if (state.badge) {
+      state.badge.style.display = "none";
+    }
   }
 
   function truncate(value, maxLen) {
@@ -603,6 +684,8 @@
     root.addEventListener("click", handleUiClick);
     initCounts();
     updateSelectedLabel();
+    stopUiPolling();
+    setBadge("TPDA Observer ready", "ok", 2500);
   }
 
   function setStatus(message) {
@@ -989,6 +1072,24 @@
     createUi();
   }
 
+  function startUiPolling() {
+    if (state.uiPoller) return;
+    state.uiPoller = setInterval(() => {
+      ensureBadge();
+      ensureUiMounted();
+      const existing = document.getElementById("tpda-data-observer");
+      if (existing && existing.isConnected) {
+        stopUiPolling();
+      }
+    }, 1000);
+  }
+
+  function stopUiPolling() {
+    if (!state.uiPoller) return;
+    clearInterval(state.uiPoller);
+    state.uiPoller = null;
+  }
+
   function setupUiPersistence() {
     if (!window.MutationObserver) return;
     const target = document.documentElement || document.body;
@@ -1016,8 +1117,27 @@
     }
   }
 
-  setupWebSocketLogging();
-  setupFetchLogging();
-  setupXhrLogging();
-  bootUiWhenReady();
+  function safeSetup(label, fn) {
+    try {
+      fn();
+    } catch (err) {
+      reportBootError(err, label);
+    }
+  }
+
+  function bootObserver() {
+    setBadge("TPDA Observer booting...", "info");
+    safeSetup("websocket", setupWebSocketLogging);
+    safeSetup("fetch", setupFetchLogging);
+    safeSetup("xhr", setupXhrLogging);
+    bootUiWhenReady();
+    startUiPolling();
+    observerApi.booted = true;
+  }
+
+  try {
+    bootObserver();
+  } catch (err) {
+    reportBootError(err, "boot");
+  }
 })();
