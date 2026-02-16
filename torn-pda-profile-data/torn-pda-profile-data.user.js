@@ -27,6 +27,7 @@
     "xantaken",
     "overdosed",
     "cantaken",
+    "energydrinkused",
     "refills",
     "nerverefills",
     "boostersused",
@@ -39,6 +40,7 @@
     "xantaken",
     "overdosed",
     "cantaken",
+    "energydrinkused",
     "refills",
     "nerverefills",
     "boostersused",
@@ -52,7 +54,9 @@
     "racingskill",
     "respectforfaction",
     "rehabcost",
-    "totalworkingstats"
+    "manuallabor",
+    "intelligence",
+    "endurance"
   ];
 
   const state = {
@@ -69,15 +73,16 @@
     style.textContent = `
       #${SCRIPT_ID} {
         box-sizing: border-box;
-        width: min(980px, calc(100vw - 16px));
-        margin: 8px auto;
-        padding: 10px;
+        width: calc(100vw - 8px);
+        max-width: 920px;
+        margin: 6px auto;
+        padding: 8px;
         border-radius: 8px;
         border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(20, 20, 24, 0.92);
         color: #e5e5e5;
         font-family: Arial, sans-serif;
-        line-height: 1.25;
+        line-height: 1.2;
       }
       #${SCRIPT_ID} * {
         box-sizing: border-box;
@@ -87,10 +92,10 @@
         align-items: center;
         justify-content: space-between;
         gap: 8px;
-        margin-bottom: 8px;
+        margin-bottom: 6px;
       }
       #${SCRIPT_ID} .tpda-title {
-        font-size: 16px;
+        font-size: 15px;
         font-weight: 700;
       }
       #${SCRIPT_ID} .tpda-subtitle {
@@ -125,7 +130,7 @@
         color: #d7e7ff;
       }
       #${SCRIPT_ID} .tpda-section-title {
-        margin: 10px 0 6px;
+        margin: 8px 0 5px;
         font-size: 12px;
         font-weight: 700;
         color: #d9d9d9;
@@ -134,15 +139,15 @@
       }
       #${SCRIPT_ID} .tpda-grid {
         display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 6px;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 5px;
       }
       #${SCRIPT_ID} .tpda-card {
         border-radius: 6px;
         background: rgba(255, 255, 255, 0.04);
         border: 1px solid rgba(255, 255, 255, 0.06);
-        padding: 7px 8px;
-        min-height: 62px;
+        padding: 6px 7px;
+        min-height: 56px;
       }
       #${SCRIPT_ID} .tpda-label {
         color: #bfbfbf;
@@ -150,7 +155,7 @@
       }
       #${SCRIPT_ID} .tpda-value {
         margin-top: 2px;
-        font-size: 18px;
+        font-size: 17px;
         font-weight: 700;
       }
       #${SCRIPT_ID} .tpda-value.tpda-gold {
@@ -162,16 +167,21 @@
         color: #bfbfbf;
       }
       #${SCRIPT_ID} .tpda-footnote {
-        margin-top: 10px;
+        margin-top: 8px;
         font-size: 11px;
         color: #adadad;
       }
       @media (max-width: 520px) {
         #${SCRIPT_ID} {
-          width: calc(100vw - 10px);
+          width: calc(100vw - 6px);
           margin: 6px auto;
           padding: 8px;
         }
+        #${SCRIPT_ID} .tpda-value {
+          font-size: 16px;
+        }
+      }
+      @media (max-width: 355px) {
         #${SCRIPT_ID} .tpda-grid {
           grid-template-columns: 1fr;
         }
@@ -393,19 +403,62 @@
     };
   }
 
+  function readNested(source, path) {
+    if (!source || typeof source !== "object") return null;
+    let node = source;
+    for (const part of path) {
+      if (!node || typeof node !== "object" || !(part in node)) {
+        return null;
+      }
+      node = node[part];
+    }
+    return toNumber(node);
+  }
+
+  function flattenPopularStats(personalstats) {
+    const out = {};
+    if (!personalstats || typeof personalstats !== "object") return out;
+
+    const map = [
+      ["timeplayed", ["other", "activity", "time"]],
+      ["activestreak", ["other", "activity", "streak", "current"]],
+      ["bestactivestreak", ["other", "activity", "streak", "best"]],
+      ["refills", ["other", "refills", "energy"]],
+      ["nerverefills", ["other", "refills", "nerve"]],
+      ["xantaken", ["drugs", "xanax"]],
+      ["overdosed", ["drugs", "overdoses"]],
+      ["rehabcost", ["drugs", "rehabilitations", "fees"]],
+      ["attackswon", ["attacking", "attacks", "won"]],
+      ["rankedwarhits", ["attacking", "faction", "ranked_war_hits"]],
+      ["respectforfaction", ["attacking", "faction", "respect"]],
+      ["reviveskill", ["hospital", "reviving", "skill"]],
+      ["boostersused", ["items", "used", "boosters"]],
+      ["cantaken", ["items", "used", "energy_drinks"]],
+      ["energydrinkused", ["items", "used", "energy_drinks"]],
+      ["statenhancersused", ["items", "used", "stat_enhancers"]]
+    ];
+
+    for (const [key, path] of map) {
+      const value = readNested(personalstats, path);
+      if (value != null) out[key] = value;
+    }
+    return out;
+  }
+
+  async function fetchPopularStatsSnapshot(profileId, timestamp) {
+    try {
+      const params = timestamp == null ? { cat: "popular" } : { cat: "popular", timestamp };
+      const payload = await apiGet(`/user/${profileId}/personalstats`, params);
+      return flattenPopularStats(payload ? payload.personalstats : null);
+    } catch (err) {
+      return {};
+    }
+  }
+
   async function fetchDaysInFaction(profileId) {
     const payload = await apiGet(`/user/${profileId}/faction`);
     const days = payload && payload.faction ? toNumber(payload.faction.days_in_faction) : null;
     return days == null ? null : Math.max(0, Math.floor(days));
-  }
-
-  function delta(currentValue, oldValue, allowNegative) {
-    const current = toNumber(currentValue);
-    const previous = toNumber(oldValue);
-    if (current == null || previous == null) return null;
-    const value = current - previous;
-    if (allowNegative) return value;
-    return Math.max(0, value);
   }
 
   function decimal(value, digits) {
@@ -454,16 +507,45 @@
     return `${sign}$${formatInteger(absolute)}`;
   }
 
+  function pickStatValue(source, keys) {
+    if (!source || typeof source !== "object") return null;
+    for (const key of keys) {
+      const value = toNumber(source[key]);
+      if (value != null) return value;
+    }
+    return null;
+  }
+
+  function pickDeltaByKeys(current, historic, keys, options) {
+    const config = options || {};
+    const currentValue = pickStatValue(current, keys);
+    const historicValue = pickStatValue(historic, keys);
+
+    if (currentValue == null && historicValue == null) {
+      return config.whenMissing == null ? null : config.whenMissing;
+    }
+
+    if (currentValue == null || historicValue == null) {
+      if (!config.missingAsZero) return null;
+    }
+
+    const c = currentValue == null ? 0 : currentValue;
+    const h = historicValue == null ? 0 : historicValue;
+    const raw = c - h;
+    if (config.allowNegative) return raw;
+    return Math.max(0, raw);
+  }
+
   function buildModel(current, historic, daysInFaction) {
-    const timePlayed = delta(current.timeplayed, historic.timeplayed, false);
-    const xanaxTaken = delta(current.xantaken, historic.xantaken, false);
-    const overdoses = delta(current.overdosed, historic.overdosed, false);
-    const cansUsed = delta(current.cantaken, historic.cantaken, false);
-    const refillEnergy = delta(current.refills, historic.refills, false);
-    const refillNerve = delta(current.nerverefills, historic.nerverefills, false);
-    const boostersUsed = delta(current.boostersused, historic.boostersused, false);
-    const statEnhancers30d = delta(current.statenhancersused, historic.statenhancersused, false);
-    const networthGain = delta(current.networth, historic.networth, true);
+    const timePlayed = pickDeltaByKeys(current, historic, ["timeplayed"], { missingAsZero: false });
+    const xanaxTaken = pickDeltaByKeys(current, historic, ["xantaken"], { missingAsZero: false });
+    const overdoses = pickDeltaByKeys(current, historic, ["overdosed"], { missingAsZero: false });
+    const cansUsed = pickDeltaByKeys(current, historic, ["cantaken", "energydrinkused"], { missingAsZero: false });
+    const refillEnergy = pickDeltaByKeys(current, historic, ["refills"], { missingAsZero: false });
+    const refillNerve = pickDeltaByKeys(current, historic, ["nerverefills"], { missingAsZero: false });
+    const boostersUsed = pickDeltaByKeys(current, historic, ["boostersused"], { missingAsZero: false });
+    const statEnhancers30d = pickDeltaByKeys(current, historic, ["statenhancersused"], { missingAsZero: false });
+    const networthGain = pickDeltaByKeys(current, historic, ["networth"], { allowNegative: true, missingAsZero: false });
 
     let miscBoosters = null;
     if (boostersUsed != null && cansUsed != null && statEnhancers30d != null) {
@@ -472,6 +554,13 @@
 
     const xanaxWithoutOdDaily = (xanaxTaken != null && overdoses != null)
       ? xanaxTaken / Math.max(1, WINDOW_DAYS - overdoses)
+      : null;
+
+    const manualLabor = pickStatValue(current, ["manuallabor", "manual_labor", "manual"]);
+    const intelligence = pickStatValue(current, ["intelligence"]);
+    const endurance = pickStatValue(current, ["endurance"]);
+    const totalWorkStats = (manualLabor != null || intelligence != null || endurance != null)
+      ? (manualLabor || 0) + (intelligence || 0) + (endurance || 0)
       : null;
 
     return {
@@ -491,18 +580,18 @@
         statEnhancers30d
       },
       lifetime: {
-        activeStreak: toNumber(current.activestreak),
-        bestActiveStreak: toNumber(current.bestactivestreak),
-        rankedWarHits: toNumber(current.rankedwarhits),
-        attacksWon: toNumber(current.attackswon),
-        reviveSkill: toNumber(current.reviveskill),
-        racingSkill: toNumber(current.racingskill),
-        totalNetworth: toNumber(current.networth),
-        statEnhancersLifetime: toNumber(current.statenhancersused),
-        totalRespect: toNumber(current.respectforfaction),
+        activeStreak: pickStatValue(current, ["activestreak"]),
+        bestActiveStreak: pickStatValue(current, ["bestactivestreak"]),
+        rankedWarHits: pickStatValue(current, ["rankedwarhits"]),
+        attacksWon: pickStatValue(current, ["attackswon"]),
+        reviveSkill: pickStatValue(current, ["reviveskill"]),
+        racingSkill: pickStatValue(current, ["racingskill"]),
+        totalNetworth: pickStatValue(current, ["networth"]),
+        statEnhancersLifetime: pickStatValue(current, ["statenhancersused"]),
+        totalRespect: pickStatValue(current, ["respectforfaction"]),
         daysInFaction,
-        spentOnRehab: toNumber(current.rehabcost),
-        totalWorkStats: toNumber(current.totalworkingstats)
+        spentOnRehab: pickStatValue(current, ["rehabcost"]),
+        totalWorkStats
       }
     };
   }
@@ -577,7 +666,7 @@
     ].join("");
 
     const warning = Array.isArray(invalidStats) && invalidStats.length
-      ? `<div class="tpda-status is-error">Skipped unsupported stat keys: ${escapeHtml(invalidStats.join(", "))}</div>`
+      ? `<div class="tpda-status is-info">Skipped unsupported stat keys: ${escapeHtml(invalidStats.join(", "))}</div>`
       : "";
 
     const root = ensureRoot();
@@ -616,9 +705,11 @@
 
     const monthAgo = Math.floor(Date.now() / 1000) - WINDOW_SECONDS;
 
-    const [currentResult, historicResult, daysInFaction] = await Promise.all([
+    const [currentResult, historicResult, currentPopular, historicPopular, daysInFaction] = await Promise.all([
       fetchStatsSnapshot(profileId, CURRENT_STAT_NAMES, null, "Current"),
       fetchStatsSnapshot(profileId, MONTHLY_STAT_NAMES, monthAgo, "Historical"),
+      fetchPopularStatsSnapshot(profileId, null),
+      fetchPopularStatsSnapshot(profileId, monthAgo),
       fetchDaysInFaction(profileId).catch(() => null)
     ]);
 
@@ -627,7 +718,16 @@
       ...(historicResult.invalidStats || [])
     ]));
 
-    const model = buildModel(currentResult.stats || {}, historicResult.stats || {}, daysInFaction);
+    const currentStats = {
+      ...(currentPopular || {}),
+      ...(currentResult.stats || {})
+    };
+    const historicStats = {
+      ...(historicPopular || {}),
+      ...(historicResult.stats || {})
+    };
+
+    const model = buildModel(currentStats, historicStats, daysInFaction);
     const record = { time: Date.now(), model, invalidStats };
     state.cache.set(profileId, record);
     pruneCache();
