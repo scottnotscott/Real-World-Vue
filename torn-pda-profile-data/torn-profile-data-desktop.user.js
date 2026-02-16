@@ -139,7 +139,7 @@
     style.textContent = `
       #${SCRIPT_ID} {
         box-sizing: border-box;
-        width: min(1220px, calc(100vw - 26px));
+        width: min(100%, 980px);
         margin: 10px auto;
         padding: 12px 14px;
         border-radius: 10px;
@@ -149,6 +149,7 @@
         font-family: Inter, Arial, sans-serif;
         line-height: 1.2;
         box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+        overflow: hidden;
       }
       #${SCRIPT_ID} * {
         box-sizing: border-box;
@@ -323,7 +324,7 @@
 
       @media (max-width: 700px) {
         #${SCRIPT_ID} {
-          width: calc(100vw - 10px);
+          width: min(100%, calc(100vw - 10px));
           margin: 6px auto;
           padding: 8px;
         }
