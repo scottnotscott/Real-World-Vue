@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA - Profile Data Panel
 // @namespace    local.torn.pda.profiledata
-// @version      0.1.0
+// @version      0.2.0
 // @description  Mobile-friendly profile stats panel for Torn PDA.
 // @match        https://www.torn.com/*
 // @run-at       document-end
@@ -53,10 +53,7 @@
     "reviveskill",
     "racingskill",
     "respectforfaction",
-    "rehabcost",
-    "manuallabor",
-    "intelligence",
-    "endurance"
+    "rehabcost"
   ];
 
   const state = {
@@ -73,16 +70,16 @@
     style.textContent = `
       #${SCRIPT_ID} {
         box-sizing: border-box;
-        width: calc(100vw - 8px);
-        max-width: 920px;
-        margin: 6px auto;
-        padding: 8px;
-        border-radius: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        background: rgba(20, 20, 24, 0.92);
+        width: calc(100vw - 4px);
+        max-width: 900px;
+        margin: 2px auto;
+        padding: 4px 5px;
+        border-radius: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(16, 16, 20, 0.93);
         color: #e5e5e5;
         font-family: Arial, sans-serif;
-        line-height: 1.2;
+        line-height: 1.15;
       }
       #${SCRIPT_ID} * {
         box-sizing: border-box;
@@ -91,33 +88,34 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 8px;
-        margin-bottom: 6px;
+        gap: 5px;
+        margin-bottom: 3px;
       }
       #${SCRIPT_ID} .tpda-title {
-        font-size: 15px;
+        font-size: 13px;
         font-weight: 700;
       }
       #${SCRIPT_ID} .tpda-subtitle {
-        font-size: 11px;
+        font-size: 9.5px;
         color: #bdbdbd;
       }
       #${SCRIPT_ID} .tpda-btn {
         border: 1px solid #4b4b4b;
         background: #2a2a2a;
         color: #f0f0f0;
-        border-radius: 5px;
-        padding: 4px 8px;
-        font-size: 12px;
+        border-radius: 4px;
+        padding: 2px 6px;
+        font-size: 10px;
+        line-height: 1.1;
       }
       #${SCRIPT_ID} .tpda-btn:active {
         transform: translateY(1px);
       }
       #${SCRIPT_ID} .tpda-status {
-        padding: 6px 8px;
-        border-radius: 6px;
-        margin-bottom: 8px;
-        font-size: 12px;
+        padding: 4px 6px;
+        border-radius: 5px;
+        margin-bottom: 4px;
+        font-size: 10px;
       }
       #${SCRIPT_ID} .tpda-status.is-error {
         background: rgba(155, 48, 48, 0.2);
@@ -130,8 +128,8 @@
         color: #d7e7ff;
       }
       #${SCRIPT_ID} .tpda-section-title {
-        margin: 8px 0 5px;
-        font-size: 12px;
+        margin: 4px 0 3px;
+        font-size: 10px;
         font-weight: 700;
         color: #d9d9d9;
         text-transform: uppercase;
@@ -139,51 +137,58 @@
       }
       #${SCRIPT_ID} .tpda-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-        gap: 5px;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 3px;
       }
       #${SCRIPT_ID} .tpda-card {
-        border-radius: 6px;
-        background: rgba(255, 255, 255, 0.04);
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        padding: 6px 7px;
-        min-height: 56px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        padding: 4px 5px;
+        min-height: 34px;
       }
       #${SCRIPT_ID} .tpda-label {
         color: #bfbfbf;
-        font-size: 11px;
+        font-size: 9px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       #${SCRIPT_ID} .tpda-value {
-        margin-top: 2px;
-        font-size: 17px;
+        margin-top: 1px;
+        font-size: 15px;
         font-weight: 700;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       #${SCRIPT_ID} .tpda-value.tpda-gold {
         color: #d7a544;
       }
       #${SCRIPT_ID} .tpda-meta {
-        margin-top: 2px;
-        font-size: 11px;
+        margin-top: 1px;
+        font-size: 9px;
         color: #bfbfbf;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       #${SCRIPT_ID} .tpda-footnote {
-        margin-top: 8px;
-        font-size: 11px;
+        margin-top: 4px;
+        font-size: 9px;
         color: #adadad;
       }
-      @media (max-width: 520px) {
-        #${SCRIPT_ID} {
-          width: calc(100vw - 6px);
-          margin: 6px auto;
-          padding: 8px;
-        }
-        #${SCRIPT_ID} .tpda-value {
-          font-size: 16px;
+      @media (max-width: 510px) {
+        #${SCRIPT_ID} .tpda-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
         }
       }
-      @media (max-width: 355px) {
+      @media (max-width: 345px) {
         #${SCRIPT_ID} .tpda-grid {
-          grid-template-columns: 1fr;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        #${SCRIPT_ID} .tpda-value {
+          font-size: 13px;
         }
       }
     `;
@@ -455,6 +460,26 @@
     }
   }
 
+  async function fetchJobsStatsSnapshot(profileId) {
+    try {
+      const payload = await apiGet(`/user/${profileId}/personalstats`, { cat: "jobs" });
+      const personal = payload ? payload.personalstats : null;
+      const out = {};
+      const total = readNested(personal, ["jobs", "stats", "total"]);
+      const manual = readNested(personal, ["jobs", "stats", "manual"]);
+      const intelligence = readNested(personal, ["jobs", "stats", "intelligence"]);
+      const endurance = readNested(personal, ["jobs", "stats", "endurance"]);
+
+      if (total != null) out.totalworkstats = total;
+      if (manual != null) out.manuallabor = manual;
+      if (intelligence != null) out.intelligence = intelligence;
+      if (endurance != null) out.endurance = endurance;
+      return out;
+    } catch (err) {
+      return {};
+    }
+  }
+
   async function fetchDaysInFaction(profileId) {
     const payload = await apiGet(`/user/${profileId}/faction`);
     const days = payload && payload.faction ? toNumber(payload.faction.days_in_faction) : null;
@@ -480,13 +505,10 @@
     const hours = Math.floor(remaining / 3600);
     remaining -= hours * 3600;
     const minutes = Math.floor(remaining / 60);
-    remaining -= minutes * 60;
-    const parts = [];
-    if (days > 0) parts.push(`${days}d`);
-    if (days > 0 || hours > 0) parts.push(`${hours}h`);
-    if (days > 0 || hours > 0 || minutes > 0) parts.push(`${minutes}m`);
-    parts.push(`${remaining}s`);
-    return parts.join(" ");
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    if (minutes > 0) return `${minutes}m`;
+    return `${remaining}s`;
   }
 
   function formatCurrencyCompact(value) {
@@ -559,9 +581,12 @@
     const manualLabor = pickStatValue(current, ["manuallabor", "manual_labor", "manual"]);
     const intelligence = pickStatValue(current, ["intelligence"]);
     const endurance = pickStatValue(current, ["endurance"]);
-    const totalWorkStats = (manualLabor != null || intelligence != null || endurance != null)
-      ? (manualLabor || 0) + (intelligence || 0) + (endurance || 0)
-      : null;
+    const totalWorkStatsFromApi = pickStatValue(current, ["totalworkstats"]);
+    const totalWorkStats = totalWorkStatsFromApi != null
+      ? totalWorkStatsFromApi
+      : (manualLabor != null || intelligence != null || endurance != null)
+          ? (manualLabor || 0) + (intelligence || 0) + (endurance || 0)
+          : null;
 
     return {
       monthly: {
@@ -596,14 +621,30 @@
     };
   }
 
-  function metricCard(label, value, meta, highlight) {
+  function metricCard(metric) {
     return `
       <div class="tpda-card">
-        <div class="tpda-label">${escapeHtml(label)}</div>
-        <div class="tpda-value${highlight ? " tpda-gold" : ""}">${escapeHtml(value)}</div>
-        ${meta ? `<div class="tpda-meta">${escapeHtml(meta)}</div>` : ""}
+        <div class="tpda-label">${escapeHtml(metric.label)}</div>
+        <div class="tpda-value${metric.highlight ? " tpda-gold" : ""}">${escapeHtml(metric.value)}</div>
+        ${metric.meta ? `<div class="tpda-meta">${escapeHtml(metric.meta)}</div>` : ""}
       </div>
     `;
+  }
+
+  function buildMetricCards(metrics) {
+    return metrics
+      .filter(metric => !(metric.hideWhenMissing && metric.raw == null))
+      .map(metricCard)
+      .join("");
+  }
+
+  function formatRefills(energy, nerve) {
+    const e = toNumber(energy);
+    const n = toNumber(nerve);
+    if (e == null && n == null) return "--";
+    if (e == null) return `${formatInteger(n)}N`;
+    if (n == null) return `${formatInteger(e)}E`;
+    return `${formatInteger(e)}E ${formatInteger(n)}N`;
   }
 
   function renderLoading(profileId) {
@@ -636,38 +677,138 @@
     `;
   }
 
-  function renderStats(profileId, model, invalidStats) {
+  function renderStats(profileId, model) {
     const monthly = model.monthly;
     const lifetime = model.lifetime;
 
-    const monthlyCards = [
-      metricCard("Time Played", formatDuration(monthly.timePlayed), `Average: ${decimal(monthly.timePlayedDailyHours, 2)} hours / day`, true),
-      metricCard("Xanax Taken", formatInteger(monthly.xanaxTaken), `Average: ${decimal(monthly.xanaxDaily, 2)} / day`, true),
-      metricCard("Overdoses", formatInteger(monthly.overdoses), `Without ODs: ${decimal(monthly.xanaxWithoutOdDaily, 2)} / day`, true),
-      metricCard("Cans Used", formatInteger(monthly.cansUsed), `Average: ${decimal(monthly.cansDaily, 2)} / day`, true),
-      metricCard("Refills", `${formatInteger(monthly.refillEnergy)} E + ${formatInteger(monthly.refillNerve)} N`, null, true),
-      metricCard("Misc Boosters", formatInteger(monthly.miscBoosters), null, true),
-      metricCard("Networth Gain", formatCurrencyCompact(monthly.networthGain), null, true),
-      metricCard("Stat Enhancers", formatInteger(monthly.statEnhancers30d), null, true)
-    ].join("");
+    const monthlyCards = buildMetricCards([
+      {
+        raw: monthly.timePlayed,
+        label: "Time",
+        value: formatDuration(monthly.timePlayed),
+        meta: `${decimal(monthly.timePlayedDailyHours, 2)}h/d`,
+        highlight: true
+      },
+      {
+        raw: monthly.xanaxTaken,
+        label: "Xanax",
+        value: formatInteger(monthly.xanaxTaken),
+        meta: `${decimal(monthly.xanaxDaily, 2)}/d`,
+        highlight: true
+      },
+      {
+        raw: monthly.overdoses,
+        label: "ODs",
+        value: formatInteger(monthly.overdoses),
+        meta: `NoOD ${decimal(monthly.xanaxWithoutOdDaily, 2)}/d`,
+        highlight: true
+      },
+      {
+        raw: monthly.cansUsed,
+        label: "Cans",
+        value: formatInteger(monthly.cansUsed),
+        meta: `${decimal(monthly.cansDaily, 2)}/d`,
+        highlight: true
+      },
+      {
+        raw: monthly.refillEnergy != null || monthly.refillNerve != null ? 1 : null,
+        label: "Refills",
+        value: formatRefills(monthly.refillEnergy, monthly.refillNerve),
+        meta: null,
+        highlight: true
+      },
+      {
+        raw: monthly.miscBoosters,
+        label: "MiscB",
+        value: formatInteger(monthly.miscBoosters),
+        meta: null,
+        highlight: true
+      },
+      {
+        raw: monthly.networthGain,
+        label: "NW Δ",
+        value: formatCurrencyCompact(monthly.networthGain),
+        meta: null,
+        highlight: true
+      },
+      {
+        raw: monthly.statEnhancers30d,
+        label: "SE",
+        value: formatInteger(monthly.statEnhancers30d),
+        meta: null,
+        highlight: true
+      }
+    ]);
 
-    const lifetimeCards = [
-      metricCard("Activity Streak", formatInteger(lifetime.activeStreak), `Best Streak: ${formatInteger(lifetime.bestActiveStreak)}`, false),
-      metricCard("Ranked War Hits", formatInteger(lifetime.rankedWarHits), null, false),
-      metricCard("Attacks Won", formatInteger(lifetime.attacksWon), null, false),
-      metricCard("Revive Skill", decimal(lifetime.reviveSkill, 2), null, false),
-      metricCard("Racing Skill", decimal(lifetime.racingSkill, 2), null, false),
-      metricCard("Total Networth", formatCurrencyCompact(lifetime.totalNetworth), null, false),
-      metricCard("Lifetime SE Usage", formatInteger(lifetime.statEnhancersLifetime), null, false),
-      metricCard("Total Respect", formatInteger(lifetime.totalRespect), null, false),
-      metricCard("Days in Faction", formatInteger(lifetime.daysInFaction), null, false),
-      metricCard("Spent on Rehab", formatCurrencyCompact(lifetime.spentOnRehab), null, false),
-      metricCard("Total Work Stats", formatInteger(lifetime.totalWorkStats), null, false)
-    ].join("");
-
-    const warning = Array.isArray(invalidStats) && invalidStats.length
-      ? `<div class="tpda-status is-info">Skipped unsupported stat keys: ${escapeHtml(invalidStats.join(", "))}</div>`
-      : "";
+    const lifetimeCards = buildMetricCards([
+      {
+        raw: lifetime.activeStreak,
+        label: "Streak",
+        value: formatInteger(lifetime.activeStreak),
+        meta: `Best ${formatInteger(lifetime.bestActiveStreak)}`
+      },
+      {
+        raw: lifetime.rankedWarHits,
+        label: "RW Hits",
+        value: formatInteger(lifetime.rankedWarHits),
+        meta: null
+      },
+      {
+        raw: lifetime.attacksWon,
+        label: "Attacks",
+        value: formatInteger(lifetime.attacksWon),
+        meta: null
+      },
+      {
+        raw: lifetime.reviveSkill,
+        label: "Revive",
+        value: decimal(lifetime.reviveSkill, 2),
+        meta: null
+      },
+      {
+        raw: lifetime.racingSkill,
+        label: "Racing",
+        value: decimal(lifetime.racingSkill, 2),
+        meta: null
+      },
+      {
+        raw: lifetime.totalNetworth,
+        label: "Networth",
+        value: formatCurrencyCompact(lifetime.totalNetworth),
+        meta: null
+      },
+      {
+        raw: lifetime.statEnhancersLifetime,
+        label: "SE Life",
+        value: formatInteger(lifetime.statEnhancersLifetime),
+        meta: null
+      },
+      {
+        raw: lifetime.totalRespect,
+        label: "Respect",
+        value: formatInteger(lifetime.totalRespect),
+        meta: null
+      },
+      {
+        raw: lifetime.daysInFaction,
+        label: "Fac Days",
+        value: formatInteger(lifetime.daysInFaction),
+        meta: null
+      },
+      {
+        raw: lifetime.spentOnRehab,
+        label: "Rehab",
+        value: formatCurrencyCompact(lifetime.spentOnRehab),
+        meta: null
+      },
+      {
+        raw: lifetime.totalWorkStats,
+        label: "Work",
+        value: formatInteger(lifetime.totalWorkStats),
+        meta: null,
+        hideWhenMissing: true
+      }
+    ]);
 
     const root = ensureRoot();
     if (!root) return;
@@ -679,12 +820,11 @@
         </div>
         <button class="tpda-btn" data-action="refresh">Refresh</button>
       </div>
-      ${warning}
       <div class="tpda-section-title">Last ${WINDOW_DAYS} days</div>
       <div class="tpda-grid">${monthlyCards}</div>
       <div class="tpda-section-title">Current / lifetime</div>
       <div class="tpda-grid">${lifetimeCards}</div>
-      <div class="tpda-footnote">Values in gold show activity over the past ${WINDOW_DAYS} days. Other values are current or lifetime totals.</div>
+      <div class="tpda-footnote">Gold = ${WINDOW_DAYS} day activity.</div>
     `;
   }
 
@@ -705,11 +845,12 @@
 
     const monthAgo = Math.floor(Date.now() / 1000) - WINDOW_SECONDS;
 
-    const [currentResult, historicResult, currentPopular, historicPopular, daysInFaction] = await Promise.all([
+    const [currentResult, historicResult, currentPopular, historicPopular, currentJobs, daysInFaction] = await Promise.all([
       fetchStatsSnapshot(profileId, CURRENT_STAT_NAMES, null, "Current"),
       fetchStatsSnapshot(profileId, MONTHLY_STAT_NAMES, monthAgo, "Historical"),
       fetchPopularStatsSnapshot(profileId, null),
       fetchPopularStatsSnapshot(profileId, monthAgo),
+      fetchJobsStatsSnapshot(profileId),
       fetchDaysInFaction(profileId).catch(() => null)
     ]);
 
@@ -717,9 +858,13 @@
       ...(currentResult.invalidStats || []),
       ...(historicResult.invalidStats || [])
     ]));
+    if (invalidStats.length) {
+      console.warn("[TPDA Profile Data] Skipped unsupported stats:", invalidStats.join(", "));
+    }
 
     const currentStats = {
       ...(currentPopular || {}),
+      ...(currentJobs || {}),
       ...(currentResult.stats || {})
     };
     const historicStats = {
@@ -747,7 +892,7 @@
     try {
       const record = await fetchProfileData(profileId, !!force);
       if (thisRequestId !== state.requestId) return;
-      renderStats(profileId, record.model, record.invalidStats);
+      renderStats(profileId, record.model);
     } catch (err) {
       if (thisRequestId !== state.requestId) return;
       const message = err && err.message ? err.message : "Failed to load profile data.";
