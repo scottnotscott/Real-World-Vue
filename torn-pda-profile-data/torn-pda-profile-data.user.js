@@ -88,9 +88,9 @@
     style.textContent = `
       #${SCRIPT_ID} {
         box-sizing: border-box;
-        width: calc(100vw - 2px);
-        max-width: 860px;
-        margin: 1px auto;
+        width: 100%;
+        max-width: 100%;
+        margin: 0;
         padding: 3px 4px;
         border-radius: 5px;
         border: 1px solid rgba(255, 255, 255, 0.07);
@@ -98,29 +98,45 @@
         color: #e5e5e5;
         font-family: Arial, sans-serif;
         line-height: 1.1;
+        overflow: hidden;
       }
       #${SCRIPT_ID} * {
         box-sizing: border-box;
       }
       #${SCRIPT_ID} .tpda-head {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         justify-content: space-between;
         gap: 4px;
+        flex-wrap: wrap;
         margin-bottom: 2px;
       }
       #${SCRIPT_ID} .tpda-title {
         font-size: 12px;
         font-weight: 700;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       #${SCRIPT_ID} .tpda-subtitle {
         font-size: 9px;
         color: #bdbdbd;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #${SCRIPT_ID} .tpda-heading {
+        min-width: 0;
+        flex: 1 1 auto;
       }
       #${SCRIPT_ID} .tpda-actions {
         display: flex;
         align-items: center;
         gap: 2px;
+        margin-left: auto;
+        flex-shrink: 0;
+        flex-wrap: wrap;
+        justify-content: flex-end;
       }
       #${SCRIPT_ID} .tpda-btn {
         border: 1px solid #4b4b4b;
@@ -153,7 +169,7 @@
       }
       #${SCRIPT_ID} .tpda-columns {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 3px;
       }
       #${SCRIPT_ID} .tpda-block {
@@ -181,15 +197,28 @@
         padding: 1px 1px;
         vertical-align: middle;
       }
-      #${SCRIPT_ID} .tpda-key-cell {
+      #${SCRIPT_ID} .tpda-table.has-meta .tpda-key-cell {
         width: 34%;
+      }
+      #${SCRIPT_ID} .tpda-table.has-meta .tpda-value-cell {
+        width: 33%;
+      }
+      #${SCRIPT_ID} .tpda-table.has-meta .tpda-meta-cell {
+        width: 33%;
+      }
+      #${SCRIPT_ID} .tpda-table.no-meta .tpda-key-cell {
+        width: 58%;
+      }
+      #${SCRIPT_ID} .tpda-table.no-meta .tpda-value-cell {
+        width: 42%;
+      }
+      #${SCRIPT_ID} .tpda-key-cell {
         color: #bfbfbf;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
       #${SCRIPT_ID} .tpda-value-cell {
-        width: 35%;
         font-size: 10px;
         font-weight: 700;
         text-align: right;
@@ -201,48 +230,12 @@
         color: #d7a544;
       }
       #${SCRIPT_ID} .tpda-meta-cell {
-        width: 31%;
         font-size: 9px;
         color: #bfbfbf;
         text-align: right;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-      }
-      #${SCRIPT_ID} .tpda-summary-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 3px;
-      }
-      #${SCRIPT_ID} .tpda-summary-block {
-        border-radius: 4px;
-        background: rgba(255, 255, 255, 0.02);
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        padding: 3px 4px;
-      }
-      #${SCRIPT_ID} .tpda-summary-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 4px;
-        font-size: 9px;
-        line-height: 1.15;
-      }
-      #${SCRIPT_ID} .tpda-summary-row + .tpda-summary-row {
-        margin-top: 1px;
-      }
-      #${SCRIPT_ID} .tpda-summary-key {
-        color: #bfbfbf;
-        white-space: nowrap;
-      }
-      #${SCRIPT_ID} .tpda-summary-value {
-        font-weight: 700;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      #${SCRIPT_ID} .tpda-summary-value.tpda-gold {
-        color: #d7a544;
       }
       #${SCRIPT_ID} .tpda-footnote {
         margin-top: 2px;
@@ -257,11 +250,12 @@
           font-size: 9px;
         }
       }
-      @media (max-width: 360px) {
-        #${SCRIPT_ID} .tpda-columns,
-        #${SCRIPT_ID} .tpda-summary-grid {
+      @media (max-width: 700px) {
+        #${SCRIPT_ID} .tpda-columns {
           grid-template-columns: 1fr;
         }
+      }
+      @media (max-width: 360px) {
         #${SCRIPT_ID} .tpda-value-cell {
           font-size: 8px;
         }
@@ -723,23 +717,11 @@
       .join("");
   }
 
-  function summaryRowsHtml(rows) {
-    return rows
-      .filter(row => !(row.hideWhenMissing && row.raw == null))
-      .map(row => `
-        <div class="tpda-summary-row">
-          <span class="tpda-summary-key">${escapeHtml(row.label)}</span>
-          <span class="tpda-summary-value${row.highlight ? " tpda-gold" : ""}">${escapeHtml(row.value)}</span>
-        </div>
-      `)
-      .join("");
-  }
-
   function sectionTableHtml(title, rows, includeMeta) {
     return `
       <section class="tpda-block">
         <div class="tpda-block-title">${escapeHtml(title)}</div>
-        <table class="tpda-table">
+        <table class="tpda-table ${includeMeta ? "has-meta" : "no-meta"}">
           <tbody>${tableRowsHtml(rows, includeMeta)}</tbody>
         </table>
       </section>
@@ -749,10 +731,10 @@
   function renderLoading(profileId) {
     const root = ensureRoot();
     if (!root) return;
-    const toggleLabel = state.expanded ? "Min" : "Expand";
+    const toggleLabel = state.expanded ? "Collapse" : "Expand";
     root.innerHTML = `
       <div class="tpda-head">
-        <div>
+        <div class="tpda-heading">
           <div class="tpda-title">Profile Data</div>
           <div class="tpda-subtitle">User ID ${escapeHtml(profileId)}</div>
         </div>
@@ -768,10 +750,10 @@
   function renderError(profileId, message) {
     const root = ensureRoot();
     if (!root) return;
-    const toggleLabel = state.expanded ? "Min" : "Expand";
+    const toggleLabel = state.expanded ? "Collapse" : "Expand";
     root.innerHTML = `
       <div class="tpda-head">
-        <div>
+        <div class="tpda-heading">
           <div class="tpda-title">Profile Data</div>
           <div class="tpda-subtitle">User ID ${escapeHtml(profileId)}</div>
         </div>
@@ -791,28 +773,28 @@
     const monthlyRows = [
       {
         raw: monthly.timePlayed,
-        label: "Time",
+        label: "Time Played",
         value: formatDuration(monthly.timePlayed),
         meta: `${decimal(monthly.timePlayedDailyHours, 2)}h/d`,
         highlight: true
       },
       {
         raw: monthly.xanaxTaken,
-        label: "Xanax",
+        label: "Xanax Taken",
         value: formatInteger(monthly.xanaxTaken),
         meta: `${decimal(monthly.xanaxDaily, 2)}/d`,
         highlight: true
       },
       {
         raw: monthly.overdoses,
-        label: "ODs",
+        label: "Overdoses",
         value: formatInteger(monthly.overdoses),
-        meta: `NoOD ${decimal(monthly.xanaxWithoutOdDaily, 2)}/d`,
+        meta: `Without ODs ${decimal(monthly.xanaxWithoutOdDaily, 2)}/d`,
         highlight: true
       },
       {
         raw: monthly.cansUsed,
-        label: "Cans",
+        label: "Cans Used",
         value: formatInteger(monthly.cansUsed),
         meta: `${decimal(monthly.cansDaily, 2)}/d`,
         highlight: true
@@ -826,21 +808,21 @@
       },
       {
         raw: monthly.miscBoosters,
-        label: "MiscB",
+        label: "Misc Boosters",
         value: formatInteger(monthly.miscBoosters),
         meta: null,
         highlight: true
       },
       {
         raw: monthly.networthGain,
-        label: "NW Δ",
+        label: "Networth Gain",
         value: formatCurrencyCompact(monthly.networthGain),
         meta: null,
         highlight: true
       },
       {
         raw: monthly.statEnhancers30d,
-        label: "SE",
+        label: "Stat Enhancers",
         value: formatInteger(monthly.statEnhancers30d),
         meta: null,
         highlight: true
@@ -850,90 +832,88 @@
     const lifetimeRows = [
       {
         raw: lifetime.activeStreak,
-        label: "Streak",
-        value: `${formatInteger(lifetime.activeStreak)} (B${formatInteger(lifetime.bestActiveStreak)})`,
+        label: "Activity Streak",
+        value: `${formatInteger(lifetime.activeStreak)} (Best ${formatInteger(lifetime.bestActiveStreak)})`,
         meta: null
       },
       {
         raw: lifetime.rankedWarHits,
-        label: "RW Hits",
+        label: "Ranked War Hits",
         value: formatInteger(lifetime.rankedWarHits),
         meta: null
       },
       {
         raw: lifetime.attacksWon,
-        label: "Attacks",
+        label: "Attacks Won",
         value: formatInteger(lifetime.attacksWon),
         meta: null
       },
       {
         raw: lifetime.reviveSkill,
-        label: "Revive",
+        label: "Revive Skill",
         value: decimal(lifetime.reviveSkill, 2),
         meta: null
       },
       {
         raw: lifetime.racingSkill,
-        label: "Racing",
+        label: "Racing Skill",
         value: decimal(lifetime.racingSkill, 2),
         meta: null
       },
       {
         raw: lifetime.totalNetworth,
-        label: "Networth",
+        label: "Total Networth",
         value: formatCurrencyCompact(lifetime.totalNetworth),
         meta: null
       },
       {
         raw: lifetime.statEnhancersLifetime,
-        label: "SE Life",
+        label: "Lifetime SE Usage",
         value: formatInteger(lifetime.statEnhancersLifetime),
         meta: null
       },
       {
         raw: lifetime.totalRespect,
-        label: "Respect",
+        label: "Total Respect",
         value: formatInteger(lifetime.totalRespect),
         meta: null
       },
       {
         raw: lifetime.daysInFaction,
-        label: "Fac Days",
+        label: "Days in Faction",
         value: formatInteger(lifetime.daysInFaction),
         meta: null
       },
       {
         raw: lifetime.spentOnRehab,
-        label: "Rehab",
+        label: "Spent on Rehab",
         value: formatCurrencyCompact(lifetime.spentOnRehab),
         meta: null
       },
       {
         raw: lifetime.totalWorkStats,
-        label: "Work",
+        label: "Total Work Stats",
         value: formatInteger(lifetime.totalWorkStats),
         meta: null,
         hideWhenMissing: true
       }
     ];
 
-    const compactMonthlyRows = [
-      { raw: monthly.timePlayed, label: "T", value: formatDuration(monthly.timePlayed), highlight: true },
-      { raw: monthly.xanaxTaken, label: "X", value: formatInteger(monthly.xanaxTaken), highlight: true },
-      { raw: monthly.overdoses, label: "OD", value: formatInteger(monthly.overdoses), highlight: true },
-      { raw: monthly.networthGain, label: "NWΔ", value: formatCurrencyCompact(monthly.networthGain), highlight: true }
-    ];
-    const compactLifeRows = [
-      { raw: lifetime.totalNetworth, label: "NW", value: formatCurrencyCompact(lifetime.totalNetworth) },
-      { raw: lifetime.attacksWon, label: "ATK", value: formatInteger(lifetime.attacksWon) },
-      { raw: lifetime.totalRespect, label: "RSP", value: formatInteger(lifetime.totalRespect) },
-      { raw: lifetime.daysInFaction, label: "FAC", value: formatInteger(lifetime.daysInFaction) }
+    const compactRows = [
+      { raw: monthly.timePlayed, label: "30-Day Time Played", value: formatDuration(monthly.timePlayed), highlight: true },
+      { raw: monthly.xanaxTaken, label: "30-Day Xanax Taken", value: formatInteger(monthly.xanaxTaken), highlight: true },
+      { raw: monthly.overdoses, label: "30-Day Overdoses", value: formatInteger(monthly.overdoses), highlight: true },
+      { raw: monthly.networthGain, label: "30-Day Networth Gain", value: formatCurrencyCompact(monthly.networthGain), highlight: true },
+      { raw: lifetime.totalNetworth, label: "Total Networth", value: formatCurrencyCompact(lifetime.totalNetworth) },
+      { raw: lifetime.attacksWon, label: "Attacks Won", value: formatInteger(lifetime.attacksWon) },
+      { raw: lifetime.totalRespect, label: "Total Respect", value: formatInteger(lifetime.totalRespect) },
+      { raw: lifetime.daysInFaction, label: "Days in Faction", value: formatInteger(lifetime.daysInFaction) }
     ];
 
-    const toggleLabel = state.expanded ? "Min" : "Expand";
+    const toggleLabel = state.expanded ? "Collapse" : "Expand";
     const header = `
       <div class="tpda-head">
-        <div>
+        <div class="tpda-heading">
           <div class="tpda-title">Profile Data</div>
           <div class="tpda-subtitle">User ID ${escapeHtml(profileId)}</div>
         </div>
@@ -950,16 +930,7 @@
     if (!state.expanded) {
       root.innerHTML = `
         ${header}
-        <div class="tpda-summary-grid">
-          <section class="tpda-summary-block">
-            <div class="tpda-block-title">30D</div>
-            ${summaryRowsHtml(compactMonthlyRows)}
-          </section>
-          <section class="tpda-summary-block">
-            <div class="tpda-block-title">LIFE</div>
-            ${summaryRowsHtml(compactLifeRows)}
-          </section>
-        </div>
+        ${sectionTableHtml("Quick View", compactRows, false)}
         <div class="tpda-footnote">Tap Expand for full table.</div>
       `;
       return;
@@ -968,8 +939,8 @@
     root.innerHTML = `
       ${header}
       <div class="tpda-columns">
-        ${sectionTableHtml(`30D (${WINDOW_DAYS})`, monthlyRows, true)}
-        ${sectionTableHtml("CURRENT / LIFE", lifetimeRows, false)}
+        ${sectionTableHtml(`Last ${WINDOW_DAYS} Days`, monthlyRows, true)}
+        ${sectionTableHtml("Current / Lifetime", lifetimeRows, false)}
       </div>
       <div class="tpda-footnote">Gold = ${WINDOW_DAYS} day activity.</div>
     `;
