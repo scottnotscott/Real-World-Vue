@@ -15,6 +15,7 @@
   const STYLE_ID = "tpda-profile-data-style";
   const API_BASE_URL = "https://api.torn.com/v2";
   const API_KEY = "###PDA-APIKEY###";
+  const API_KEY_PLACEHOLDER = `${"#".repeat(3)}PDA-APIKEY${"#".repeat(3)}`;
   const WINDOW_DAYS = 30;
   const WINDOW_SECONDS = WINDOW_DAYS * 86400;
   const POLL_INTERVAL_MS = 1200;
@@ -265,7 +266,11 @@
   }
 
   function isApiKeyReady() {
-    return API_KEY && API_KEY !== "###PDA-APIKEY###";
+    const key = String(API_KEY || "").trim();
+    if (!key) return false;
+    if (key === API_KEY_PLACEHOLDER) return false;
+    if (/PDA-APIKEY/i.test(key)) return false;
+    return true;
   }
 
   function chunkList(list, size) {
@@ -309,13 +314,15 @@
       throw new Error(`Torn API returned an unreadable response (HTTP ${response.status}).`);
     }
     if (!response.ok) {
+      const code = payload && payload.error && payload.error.code != null ? ` [${payload.error.code}]` : "";
       const message = payload && payload.error && payload.error.error
         ? payload.error.error
         : `HTTP ${response.status}`;
-      throw new Error(message);
+      throw new Error(`${message}${code}`);
     }
     if (payload && payload.error) {
-      throw new Error(payload.error.error || "Unknown Torn API error.");
+      const code = payload.error.code != null ? ` [${payload.error.code}]` : "";
+      throw new Error(`${payload.error.error || "Unknown Torn API error."}${code}`);
     }
     return payload;
   }
@@ -341,17 +348,49 @@
     return stats;
   }
 
-  async function fetchStatsSnapshot(profileId, statNames, timestamp) {
+  function isInvalidStatError(message) {
+    return /invalid stat requested/i.test(String(message || ""));
+  }
+
+  async function fetchStatsSnapshot(profileId, statNames, timestamp, requestLabel) {
     const chunks = chunkList(statNames, 10);
-    const responses = await Promise.all(chunks.map((chunk) => apiGet(
-      `/user/${profileId}/personalstats`,
-      timestamp == null ? { stat: chunk } : { stat: chunk, timestamp }
-    )));
     const merged = {};
-    for (const payload of responses) {
-      Object.assign(merged, normalizeStatBlock(payload ? payload.personalstats : null));
+    const invalidStats = [];
+
+    for (const chunk of chunks) {
+      const params = timestamp == null ? { stat: chunk } : { stat: chunk, timestamp };
+
+      try {
+        const payload = await apiGet(`/user/${profileId}/personalstats`, params);
+        Object.assign(merged, normalizeStatBlock(payload ? payload.personalstats : null));
+        continue;
+      } catch (err) {
+        const message = err && err.message ? err.message : "Unknown API failure.";
+        if (!isInvalidStatError(message)) {
+          throw new Error(`${requestLabel} stats request failed: ${message}`);
+        }
+      }
+
+      // If a chunk is rejected due to one bad stat, probe each stat separately.
+      for (const statName of chunk) {
+        const singleParams = timestamp == null ? { stat: [statName] } : { stat: [statName], timestamp };
+        try {
+          const payload = await apiGet(`/user/${profileId}/personalstats`, singleParams);
+          Object.assign(merged, normalizeStatBlock(payload ? payload.personalstats : null));
+        } catch (innerErr) {
+          const innerMessage = innerErr && innerErr.message ? innerErr.message : "Unknown API failure.";
+          if (isInvalidStatError(innerMessage)) {
+            invalidStats.push(statName);
+          } else {
+            throw new Error(`${requestLabel} stat '${statName}' failed: ${innerMessage}`);
+          }
+        }
+      }
     }
-    return merged;
+    return {
+      stats: merged,
+      invalidStats: Array.from(new Set(invalidStats))
+    };
   }
 
   async function fetchDaysInFaction(profileId) {
@@ -508,7 +547,7 @@
     `;
   }
 
-  function renderStats(profileId, model) {
+  function renderStats(profileId, model, invalidStats) {
     const monthly = model.monthly;
     const lifetime = model.lifetime;
 
@@ -537,6 +576,10 @@
       metricCard("Total Work Stats", formatInteger(lifetime.totalWorkStats), null, false)
     ].join("");
 
+    const warning = Array.isArray(invalidStats) && invalidStats.length
+      ? `<div class="tpda-status is-error">Skipped unsupported stat keys: ${escapeHtml(invalidStats.join(", "))}</div>`
+      : "";
+
     const root = ensureRoot();
     if (!root) return;
     root.innerHTML = `
@@ -547,6 +590,7 @@
         </div>
         <button class="tpda-btn" data-action="refresh">Refresh</button>
       </div>
+      ${warning}
       <div class="tpda-section-title">Last ${WINDOW_DAYS} days</div>
       <div class="tpda-grid">${monthlyCards}</div>
       <div class="tpda-section-title">Current / lifetime</div>
@@ -567,38 +611,43 @@
   async function fetchProfileData(profileId, force) {
     const cached = state.cache.get(profileId);
     if (!force && cached && (Date.now() - cached.time) < CACHE_TTL_MS) {
-      return cached.model;
+      return cached;
     }
 
-    const now = Math.floor(Date.now() / 1000);
-    const monthAgo = now - WINDOW_SECONDS;
+    const monthAgo = Math.floor(Date.now() / 1000) - WINDOW_SECONDS;
 
-    const [currentStats, historicStats, daysInFaction] = await Promise.all([
-      fetchStatsSnapshot(profileId, CURRENT_STAT_NAMES, now),
-      fetchStatsSnapshot(profileId, MONTHLY_STAT_NAMES, monthAgo),
+    const [currentResult, historicResult, daysInFaction] = await Promise.all([
+      fetchStatsSnapshot(profileId, CURRENT_STAT_NAMES, null, "Current"),
+      fetchStatsSnapshot(profileId, MONTHLY_STAT_NAMES, monthAgo, "Historical"),
       fetchDaysInFaction(profileId).catch(() => null)
     ]);
 
-    const model = buildModel(currentStats, historicStats, daysInFaction);
-    state.cache.set(profileId, { time: Date.now(), model });
+    const invalidStats = Array.from(new Set([
+      ...(currentResult.invalidStats || []),
+      ...(historicResult.invalidStats || [])
+    ]));
+
+    const model = buildModel(currentResult.stats || {}, historicResult.stats || {}, daysInFaction);
+    const record = { time: Date.now(), model, invalidStats };
+    state.cache.set(profileId, record);
     pruneCache();
-    return model;
+    return record;
   }
 
   async function loadProfile(profileId, force) {
     const thisRequestId = ++state.requestId;
 
     if (!isApiKeyReady()) {
-      renderError(profileId, "PDA key placeholder was not replaced. Install this script in Torn PDA so ###PDA-APIKEY### is injected at runtime.");
+      renderError(profileId, "PDA API key is missing. Keep API_KEY as the PDA placeholder token and install the script through Torn PDA UserScripts.");
       return;
     }
 
     renderLoading(profileId);
 
     try {
-      const model = await fetchProfileData(profileId, !!force);
+      const record = await fetchProfileData(profileId, !!force);
       if (thisRequestId !== state.requestId) return;
-      renderStats(profileId, model);
+      renderStats(profileId, record.model, record.invalidStats);
     } catch (err) {
       if (thisRequestId !== state.requestId) return;
       const message = err && err.message ? err.message : "Failed to load profile data.";
