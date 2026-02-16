@@ -21,6 +21,7 @@
   const POLL_INTERVAL_MS = 1200;
   const CACHE_TTL_MS = 5 * 60 * 1000;
   const MAX_CACHE_ENTRIES = 30;
+  const LS_EXPANDED_KEY = "tpda_profile_data_expanded_v1";
 
   const MONTHLY_STAT_NAMES = [
     "timeplayed",
@@ -60,8 +61,25 @@
     profileId: null,
     requestId: 0,
     root: null,
-    cache: new Map()
+    cache: new Map(),
+    expanded: loadExpandedPreference()
   };
+
+  function loadExpandedPreference() {
+    try {
+      return localStorage.getItem(LS_EXPANDED_KEY) === "1";
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function saveExpandedPreference(isExpanded) {
+    try {
+      localStorage.setItem(LS_EXPANDED_KEY, isExpanded ? "1" : "0");
+    } catch (err) {
+      // Ignore storage failures.
+    }
+  }
 
   function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
@@ -70,16 +88,16 @@
     style.textContent = `
       #${SCRIPT_ID} {
         box-sizing: border-box;
-        width: calc(100vw - 4px);
-        max-width: 900px;
-        margin: 2px auto;
-        padding: 4px 5px;
-        border-radius: 6px;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        background: rgba(16, 16, 20, 0.93);
+        width: calc(100vw - 2px);
+        max-width: 860px;
+        margin: 1px auto;
+        padding: 3px 4px;
+        border-radius: 5px;
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        background: rgba(14, 14, 18, 0.95);
         color: #e5e5e5;
         font-family: Arial, sans-serif;
-        line-height: 1.15;
+        line-height: 1.1;
       }
       #${SCRIPT_ID} * {
         box-sizing: border-box;
@@ -88,34 +106,40 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 5px;
-        margin-bottom: 3px;
+        gap: 4px;
+        margin-bottom: 2px;
       }
       #${SCRIPT_ID} .tpda-title {
-        font-size: 13px;
+        font-size: 12px;
         font-weight: 700;
       }
       #${SCRIPT_ID} .tpda-subtitle {
-        font-size: 9.5px;
+        font-size: 9px;
         color: #bdbdbd;
+      }
+      #${SCRIPT_ID} .tpda-actions {
+        display: flex;
+        align-items: center;
+        gap: 2px;
       }
       #${SCRIPT_ID} .tpda-btn {
         border: 1px solid #4b4b4b;
         background: #2a2a2a;
         color: #f0f0f0;
         border-radius: 4px;
-        padding: 2px 6px;
-        font-size: 10px;
+        padding: 1px 5px;
+        font-size: 9px;
         line-height: 1.1;
+        min-height: 20px;
       }
       #${SCRIPT_ID} .tpda-btn:active {
         transform: translateY(1px);
       }
       #${SCRIPT_ID} .tpda-status {
-        padding: 4px 6px;
-        border-radius: 5px;
-        margin-bottom: 4px;
-        font-size: 10px;
+        padding: 3px 5px;
+        border-radius: 4px;
+        margin-bottom: 3px;
+        font-size: 9px;
       }
       #${SCRIPT_ID} .tpda-status.is-error {
         background: rgba(155, 48, 48, 0.2);
@@ -127,68 +151,119 @@
         border: 1px solid rgba(99, 145, 225, 0.45);
         color: #d7e7ff;
       }
-      #${SCRIPT_ID} .tpda-section-title {
-        margin: 4px 0 3px;
-        font-size: 10px;
-        font-weight: 700;
-        color: #d9d9d9;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
-      }
-      #${SCRIPT_ID} .tpda-grid {
+      #${SCRIPT_ID} .tpda-columns {
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: 1fr 1fr;
         gap: 3px;
       }
-      #${SCRIPT_ID} .tpda-card {
+      #${SCRIPT_ID} .tpda-block {
         border-radius: 4px;
-        background: rgba(255, 255, 255, 0.03);
+        background: rgba(255, 255, 255, 0.025);
         border: 1px solid rgba(255, 255, 255, 0.05);
-        padding: 4px 5px;
-        min-height: 34px;
+        padding: 3px 4px;
       }
-      #${SCRIPT_ID} .tpda-label {
-        color: #bfbfbf;
+      #${SCRIPT_ID} .tpda-block-title {
+        font-size: 8px;
+        color: #bbbbbb;
+        margin-bottom: 2px;
+        letter-spacing: 0.02em;
+      }
+      #${SCRIPT_ID} .tpda-table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+      }
+      #${SCRIPT_ID} .tpda-table tbody tr + tr td {
+        border-top: 1px dotted rgba(255, 255, 255, 0.07);
+      }
+      #${SCRIPT_ID} .tpda-table td {
         font-size: 9px;
+        padding: 1px 1px;
+        vertical-align: middle;
+      }
+      #${SCRIPT_ID} .tpda-key-cell {
+        width: 34%;
+        color: #bfbfbf;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      #${SCRIPT_ID} .tpda-value {
+      #${SCRIPT_ID} .tpda-value-cell {
+        width: 35%;
+        font-size: 10px;
+        font-weight: 700;
+        text-align: right;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #${SCRIPT_ID} .tpda-value-cell.tpda-gold {
+        color: #d7a544;
+      }
+      #${SCRIPT_ID} .tpda-meta-cell {
+        width: 31%;
+        font-size: 9px;
+        color: #bfbfbf;
+        text-align: right;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #${SCRIPT_ID} .tpda-summary-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 3px;
+      }
+      #${SCRIPT_ID} .tpda-summary-block {
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        padding: 3px 4px;
+      }
+      #${SCRIPT_ID} .tpda-summary-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 4px;
+        font-size: 9px;
+        line-height: 1.15;
+      }
+      #${SCRIPT_ID} .tpda-summary-row + .tpda-summary-row {
         margin-top: 1px;
-        font-size: 15px;
+      }
+      #${SCRIPT_ID} .tpda-summary-key {
+        color: #bfbfbf;
+        white-space: nowrap;
+      }
+      #${SCRIPT_ID} .tpda-summary-value {
         font-weight: 700;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      #${SCRIPT_ID} .tpda-value.tpda-gold {
+      #${SCRIPT_ID} .tpda-summary-value.tpda-gold {
         color: #d7a544;
       }
-      #${SCRIPT_ID} .tpda-meta {
-        margin-top: 1px;
-        font-size: 9px;
-        color: #bfbfbf;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
       #${SCRIPT_ID} .tpda-footnote {
-        margin-top: 4px;
-        font-size: 9px;
+        margin-top: 2px;
+        font-size: 8px;
         color: #adadad;
       }
       @media (max-width: 510px) {
-        #${SCRIPT_ID} .tpda-grid {
-          grid-template-columns: repeat(3, minmax(0, 1fr));
+        #${SCRIPT_ID} .tpda-table td {
+          font-size: 8px;
+        }
+        #${SCRIPT_ID} .tpda-value-cell {
+          font-size: 9px;
         }
       }
-      @media (max-width: 345px) {
-        #${SCRIPT_ID} .tpda-grid {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
+      @media (max-width: 360px) {
+        #${SCRIPT_ID} .tpda-columns,
+        #${SCRIPT_ID} .tpda-summary-grid {
+          grid-template-columns: 1fr;
         }
-        #${SCRIPT_ID} .tpda-value {
-          font-size: 13px;
+        #${SCRIPT_ID} .tpda-value-cell {
+          font-size: 8px;
         }
       }
     `;
@@ -621,23 +696,6 @@
     };
   }
 
-  function metricCard(metric) {
-    return `
-      <div class="tpda-card">
-        <div class="tpda-label">${escapeHtml(metric.label)}</div>
-        <div class="tpda-value${metric.highlight ? " tpda-gold" : ""}">${escapeHtml(metric.value)}</div>
-        ${metric.meta ? `<div class="tpda-meta">${escapeHtml(metric.meta)}</div>` : ""}
-      </div>
-    `;
-  }
-
-  function buildMetricCards(metrics) {
-    return metrics
-      .filter(metric => !(metric.hideWhenMissing && metric.raw == null))
-      .map(metricCard)
-      .join("");
-  }
-
   function formatRefills(energy, nerve) {
     const e = toNumber(energy);
     const n = toNumber(nerve);
@@ -647,16 +705,61 @@
     return `${formatInteger(e)}E ${formatInteger(n)}N`;
   }
 
+  function tableRowsHtml(rows, includeMeta) {
+    return rows
+      .filter(row => !(row.hideWhenMissing && row.raw == null))
+      .map(row => {
+        const metaCell = includeMeta
+          ? `<td class="tpda-meta-cell">${escapeHtml(row.meta || "-")}</td>`
+          : "";
+        return `
+          <tr>
+            <td class="tpda-key-cell">${escapeHtml(row.label)}</td>
+            <td class="tpda-value-cell${row.highlight ? " tpda-gold" : ""}">${escapeHtml(row.value)}</td>
+            ${metaCell}
+          </tr>
+        `;
+      })
+      .join("");
+  }
+
+  function summaryRowsHtml(rows) {
+    return rows
+      .filter(row => !(row.hideWhenMissing && row.raw == null))
+      .map(row => `
+        <div class="tpda-summary-row">
+          <span class="tpda-summary-key">${escapeHtml(row.label)}</span>
+          <span class="tpda-summary-value${row.highlight ? " tpda-gold" : ""}">${escapeHtml(row.value)}</span>
+        </div>
+      `)
+      .join("");
+  }
+
+  function sectionTableHtml(title, rows, includeMeta) {
+    return `
+      <section class="tpda-block">
+        <div class="tpda-block-title">${escapeHtml(title)}</div>
+        <table class="tpda-table">
+          <tbody>${tableRowsHtml(rows, includeMeta)}</tbody>
+        </table>
+      </section>
+    `;
+  }
+
   function renderLoading(profileId) {
     const root = ensureRoot();
     if (!root) return;
+    const toggleLabel = state.expanded ? "Min" : "Expand";
     root.innerHTML = `
       <div class="tpda-head">
         <div>
           <div class="tpda-title">Profile Data</div>
           <div class="tpda-subtitle">User ID ${escapeHtml(profileId)}</div>
         </div>
-        <button class="tpda-btn" data-action="refresh">Refresh</button>
+        <div class="tpda-actions">
+          <button class="tpda-btn" data-action="refresh">Refresh</button>
+          <button class="tpda-btn" data-action="toggle">${toggleLabel}</button>
+        </div>
       </div>
       <div class="tpda-status is-info">Loading profile stats from Torn API...</div>
     `;
@@ -665,13 +768,17 @@
   function renderError(profileId, message) {
     const root = ensureRoot();
     if (!root) return;
+    const toggleLabel = state.expanded ? "Min" : "Expand";
     root.innerHTML = `
       <div class="tpda-head">
         <div>
           <div class="tpda-title">Profile Data</div>
           <div class="tpda-subtitle">User ID ${escapeHtml(profileId)}</div>
         </div>
-        <button class="tpda-btn" data-action="refresh">Retry</button>
+        <div class="tpda-actions">
+          <button class="tpda-btn" data-action="refresh">Retry</button>
+          <button class="tpda-btn" data-action="toggle">${toggleLabel}</button>
+        </div>
       </div>
       <div class="tpda-status is-error">${escapeHtml(message)}</div>
     `;
@@ -681,7 +788,7 @@
     const monthly = model.monthly;
     const lifetime = model.lifetime;
 
-    const monthlyCards = buildMetricCards([
+    const monthlyRows = [
       {
         raw: monthly.timePlayed,
         label: "Time",
@@ -738,14 +845,14 @@
         meta: null,
         highlight: true
       }
-    ]);
+    ];
 
-    const lifetimeCards = buildMetricCards([
+    const lifetimeRows = [
       {
         raw: lifetime.activeStreak,
         label: "Streak",
-        value: formatInteger(lifetime.activeStreak),
-        meta: `Best ${formatInteger(lifetime.bestActiveStreak)}`
+        value: `${formatInteger(lifetime.activeStreak)} (B${formatInteger(lifetime.bestActiveStreak)})`,
+        meta: null
       },
       {
         raw: lifetime.rankedWarHits,
@@ -808,22 +915,62 @@
         meta: null,
         hideWhenMissing: true
       }
-    ]);
+    ];
 
-    const root = ensureRoot();
-    if (!root) return;
-    root.innerHTML = `
+    const compactMonthlyRows = [
+      { raw: monthly.timePlayed, label: "T", value: formatDuration(monthly.timePlayed), highlight: true },
+      { raw: monthly.xanaxTaken, label: "X", value: formatInteger(monthly.xanaxTaken), highlight: true },
+      { raw: monthly.overdoses, label: "OD", value: formatInteger(monthly.overdoses), highlight: true },
+      { raw: monthly.networthGain, label: "NWΔ", value: formatCurrencyCompact(monthly.networthGain), highlight: true }
+    ];
+    const compactLifeRows = [
+      { raw: lifetime.totalNetworth, label: "NW", value: formatCurrencyCompact(lifetime.totalNetworth) },
+      { raw: lifetime.attacksWon, label: "ATK", value: formatInteger(lifetime.attacksWon) },
+      { raw: lifetime.totalRespect, label: "RSP", value: formatInteger(lifetime.totalRespect) },
+      { raw: lifetime.daysInFaction, label: "FAC", value: formatInteger(lifetime.daysInFaction) }
+    ];
+
+    const toggleLabel = state.expanded ? "Min" : "Expand";
+    const header = `
       <div class="tpda-head">
         <div>
           <div class="tpda-title">Profile Data</div>
           <div class="tpda-subtitle">User ID ${escapeHtml(profileId)}</div>
         </div>
-        <button class="tpda-btn" data-action="refresh">Refresh</button>
+        <div class="tpda-actions">
+          <button class="tpda-btn" data-action="refresh">Refresh</button>
+          <button class="tpda-btn" data-action="toggle">${toggleLabel}</button>
+        </div>
       </div>
-      <div class="tpda-section-title">Last ${WINDOW_DAYS} days</div>
-      <div class="tpda-grid">${monthlyCards}</div>
-      <div class="tpda-section-title">Current / lifetime</div>
-      <div class="tpda-grid">${lifetimeCards}</div>
+    `;
+
+    const root = ensureRoot();
+    if (!root) return;
+
+    if (!state.expanded) {
+      root.innerHTML = `
+        ${header}
+        <div class="tpda-summary-grid">
+          <section class="tpda-summary-block">
+            <div class="tpda-block-title">30D</div>
+            ${summaryRowsHtml(compactMonthlyRows)}
+          </section>
+          <section class="tpda-summary-block">
+            <div class="tpda-block-title">LIFE</div>
+            ${summaryRowsHtml(compactLifeRows)}
+          </section>
+        </div>
+        <div class="tpda-footnote">Tap Expand for full table.</div>
+      `;
+      return;
+    }
+
+    root.innerHTML = `
+      ${header}
+      <div class="tpda-columns">
+        ${sectionTableHtml(`30D (${WINDOW_DAYS})`, monthlyRows, true)}
+        ${sectionTableHtml("CURRENT / LIFE", lifetimeRows, false)}
+      </div>
       <div class="tpda-footnote">Gold = ${WINDOW_DAYS} day activity.</div>
     `;
   }
@@ -901,10 +1048,26 @@
   }
 
   function handleRootClick(event) {
-    const button = event.target.closest("button[data-action='refresh']");
+    const button = event.target.closest("button[data-action]");
     if (!button) return;
-    if (!state.profileId) return;
-    loadProfile(state.profileId, true);
+    const action = button.getAttribute("data-action");
+    if (action === "toggle") {
+      state.expanded = !state.expanded;
+      saveExpandedPreference(state.expanded);
+      if (state.profileId) {
+        const cached = state.cache.get(state.profileId);
+        if (cached?.model) {
+          renderStats(state.profileId, cached.model);
+        } else {
+          loadProfile(state.profileId, false);
+        }
+      }
+      return;
+    }
+    if (action === "refresh") {
+      if (!state.profileId) return;
+      loadProfile(state.profileId, true);
+    }
   }
 
   function tick() {
