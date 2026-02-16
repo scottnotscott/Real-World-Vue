@@ -15,6 +15,7 @@
   const STYLE_ID = "tpda-profile-data-style";
   const API_BASE_URL = "https://api.torn.com/v2";
   const API_KEY = "###PDA-APIKEY###";
+  const API_KEY_PLACEHOLDER = `${"#".repeat(3)}PDA-APIKEY${"#".repeat(3)}`;
   const WINDOW_DAYS = 30;
   const WINDOW_SECONDS = WINDOW_DAYS * 86400;
   const POLL_INTERVAL_MS = 1200;
@@ -265,7 +266,11 @@
   }
 
   function isApiKeyReady() {
-    return API_KEY && API_KEY !== "###PDA-APIKEY###";
+    const key = String(API_KEY || "").trim();
+    if (!key) return false;
+    if (key === API_KEY_PLACEHOLDER) return false;
+    if (/PDA-APIKEY/i.test(key)) return false;
+    return true;
   }
 
   function chunkList(list, size) {
@@ -589,7 +594,7 @@
     const thisRequestId = ++state.requestId;
 
     if (!isApiKeyReady()) {
-      renderError(profileId, "PDA key placeholder was not replaced. Install this script in Torn PDA so ###PDA-APIKEY### is injected at runtime.");
+      renderError(profileId, "PDA API key is missing. Keep API_KEY as the PDA placeholder token and install the script through Torn PDA UserScripts.");
       return;
     }
 
