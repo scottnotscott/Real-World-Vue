@@ -120,7 +120,7 @@
       }
       #${SCRIPT_ID} .tpda-subtitle {
         font-size: 9px;
-        color: #bdbdbd;
+        color: #ffffff;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -180,7 +180,7 @@
       }
       #${SCRIPT_ID} .tpda-block-title {
         font-size: 8px;
-        color: #bbbbbb;
+        color: #ffffff;
         margin-bottom: 2px;
         letter-spacing: 0.02em;
       }
@@ -196,6 +196,7 @@
         font-size: 9px;
         padding: 1px 1px;
         vertical-align: middle;
+        color: #ffffff;
       }
       #${SCRIPT_ID} .tpda-table.has-meta .tpda-key-cell {
         width: 34%;
@@ -213,12 +214,13 @@
         width: 42%;
       }
       #${SCRIPT_ID} .tpda-key-cell {
-        color: #bfbfbf;
+        color: #ffffff;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
       #${SCRIPT_ID} .tpda-value-cell {
+        color: #ffffff;
         font-size: 10px;
         font-weight: 700;
         text-align: right;
@@ -231,7 +233,7 @@
       }
       #${SCRIPT_ID} .tpda-meta-cell {
         font-size: 9px;
-        color: #bfbfbf;
+        color: #ffffff;
         text-align: right;
         white-space: nowrap;
         overflow: hidden;
@@ -240,7 +242,7 @@
       #${SCRIPT_ID} .tpda-footnote {
         margin-top: 2px;
         font-size: 8px;
-        color: #adadad;
+        color: #ffffff;
       }
       @media (max-width: 510px) {
         #${SCRIPT_ID} .tpda-table td {
