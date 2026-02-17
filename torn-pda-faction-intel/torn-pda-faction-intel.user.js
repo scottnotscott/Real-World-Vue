@@ -88,21 +88,23 @@
 
   function ensureStyle() {
     const existingStyles = Array.from(document.querySelectorAll(`#${STYLE_ID}`));
-    if (existingStyles.length) {
+    let style = existingStyles[0] || null;
+    if (existingStyles.length > 1) {
       for (let i = 1; i < existingStyles.length; i += 1) {
         existingStyles[i].parentNode && existingStyles[i].parentNode.removeChild(existingStyles[i]);
       }
-      return;
     }
-
-    const style = document.createElement("style");
-    style.id = STYLE_ID;
+    if (!style) {
+      style = document.createElement("style");
+      style.id = STYLE_ID;
+    }
     style.textContent = `
       #${SCRIPT_ID} {
         box-sizing: border-box;
-        width: min(430px, calc(100vw - 8px));
-        margin: 4px auto;
-        padding: 6px;
+        width: min(100%, calc(100vw - 6px));
+        max-width: 100%;
+        margin: 3px 0;
+        padding: 5px;
         border-radius: 8px;
         border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(15, 15, 20, 0.96);
@@ -111,6 +113,7 @@
         line-height: 1.2;
         max-height: calc(100vh - 78px);
         overflow-y: auto;
+        overflow-x: hidden;
       }
       #${SCRIPT_ID} * {
         box-sizing: border-box;
@@ -119,8 +122,13 @@
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
+        flex-wrap: wrap;
         gap: 6px;
         margin-bottom: 6px;
+      }
+      #${SCRIPT_ID} .tpda-head > div:first-child {
+        flex: 1 1 auto;
+        min-width: 0;
       }
       #${SCRIPT_ID} .tpda-title {
         font-size: 14px;
@@ -135,16 +143,18 @@
         display: flex;
         align-items: center;
         gap: 4px;
+        flex: 0 0 auto;
+        margin-left: auto;
       }
       #${SCRIPT_ID} .tpda-btn {
         border: 1px solid #4b4b4b;
         background: #2a2a2a;
         color: #f0f0f0;
         border-radius: 5px;
-        padding: 3px 7px;
-        font-size: 11px;
+        padding: 2px 6px;
+        font-size: 10px;
         line-height: 1.1;
-        min-height: 23px;
+        min-height: 21px;
       }
       #${SCRIPT_ID} .tpda-btn:active {
         transform: translateY(1px);
@@ -194,11 +204,12 @@
         border-bottom: none;
       }
       #${SCRIPT_ID} .tpda-row-left {
+        flex: 1 1 auto;
         min-width: 0;
       }
       #${SCRIPT_ID} .tpda-row-label {
         color: #cdcdcd;
-        font-size: 11px;
+        font-size: 10px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -209,11 +220,16 @@
         color: #9f9f9f;
       }
       #${SCRIPT_ID} .tpda-row-value {
-        font-size: 14px;
+        font-size: 12px;
         font-weight: 700;
         color: #f2f2f2;
         text-align: right;
         flex: 0 0 auto;
+        max-width: 55%;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        line-height: 1.15;
       }
       #${SCRIPT_ID} .tpda-row-value.tpda-gold {
         color: #d7a544;
@@ -253,17 +269,28 @@
       }
       @media (max-width: 420px) {
         #${SCRIPT_ID} {
-          width: calc(100vw - 6px);
-          margin: 3px auto;
-          padding: 5px;
+          width: min(100%, calc(100vw - 4px));
+          margin: 2px 0;
+          padding: 4px;
           max-height: calc(100vh - 70px);
         }
         #${SCRIPT_ID} .tpda-row-label.is-leader {
-          max-width: 190px;
+          max-width: 160px;
+        }
+      }
+      @media (max-width: 360px) {
+        #${SCRIPT_ID} .tpda-actions {
+          width: 100%;
+          justify-content: flex-end;
+        }
+        #${SCRIPT_ID} .tpda-row-label.is-leader {
+          max-width: 130px;
         }
       }
     `;
-    document.head.appendChild(style);
+    if (!style.parentNode) {
+      document.head.appendChild(style);
+    }
   }
 
   function escapeHtml(value) {
