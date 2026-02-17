@@ -18,8 +18,8 @@
   const STYLE_ID = "tpda-faction-intel-style";
   const COLLAPSED_STORAGE_KEY = "tpda_faction_intel_collapsed_v1";
   const GROUP_COLLAPSE_STORAGE_KEY = "tpda_faction_intel_group_collapsed_v3";
-  const MEMBER_CACHE_STORAGE_KEY = "tpda_faction_intel_member_cache_v5";
-  const FACTION_MODEL_CACHE_STORAGE_KEY = "tpda_faction_intel_faction_model_cache_v5";
+  const MEMBER_CACHE_STORAGE_KEY = "tpda_faction_intel_member_cache_v6";
+  const FACTION_MODEL_CACHE_STORAGE_KEY = "tpda_faction_intel_faction_model_cache_v6";
   const API_BASE_URL = "https://api.torn.com/v2";
   const API_KEY = "###PDA-APIKEY###";
   const API_KEY_PLACEHOLDER = `${"#".repeat(3)}PDA-APIKEY${"#".repeat(3)}`;
@@ -32,13 +32,14 @@
   const FORCE_REFRESH_CACHE_TTL_MS = 60 * 60 * 1000;
   const MEMBER_SCAN_INTERVAL_MS = 70;
   const MEMBER_REQUEST_GAP_MS = 60;
+  const SCAN_CONCURRENCY = 2;
   const RATE_LIMIT_COOLDOWN_MS = 12000;
   const MAX_RATE_LIMIT_RETRIES = 4;
   const MAX_MEMBER_RETRIES = 2;
   const MAX_FACTION_CACHE_ENTRIES = 12;
   const MAX_MEMBER_CACHE_ENTRIES = 650;
   const LEADERBOARD_LIMIT = 3;
-  const MODEL_VERSION = 5;
+  const MODEL_VERSION = 6;
   const CANCELLED_ERROR_TOKEN = "__tpda_cancelled__";
 
   const DEFAULT_COLLAPSED_SECTION_KEYS = [
@@ -899,6 +900,31 @@
     };
   }
 
+  async function fetchCurrentStatsSnapshot(profileId, statNames) {
+    const requested = (Array.isArray(statNames) ? statNames : [])
+      .map((name) => String(name || "").toLowerCase())
+      .filter((name) => !!name && !state.invalidStatNames.has(name));
+    if (!requested.length) {
+      return { stats: {}, invalidStats: [] };
+    }
+
+    try {
+      const payload = await apiGet(`/user/${profileId}/personalstats`, { cat: "all" });
+      const stats = normalizeStatBlock(payload ? payload.personalstats : null);
+      const missing = requested.filter((name) => !Object.prototype.hasOwnProperty.call(stats, name));
+      if (!missing.length) {
+        return { stats, invalidStats: [] };
+      }
+      const fallback = await fetchStatsSnapshot(profileId, missing, null, "Current");
+      return {
+        stats: Object.assign(stats, fallback.stats || {}),
+        invalidStats: fallback.invalidStats || []
+      };
+    } catch (err) {
+      return fetchStatsSnapshot(profileId, requested, null, "Current");
+    }
+  }
+
   function delta(currentValue, oldValue, allowNegative) {
     const current = toNumber(currentValue);
     const previous = toNumber(oldValue);
@@ -988,7 +1014,13 @@
 
   function byHighest(records, getter, limit) {
     const sorted = records
-      .map((record) => ({ record, value: toNumber(getter(record)) }))
+      .map((record) => ({
+        member: {
+          id: record && record.member && record.member.id != null ? record.member.id : null,
+          name: record && record.member && record.member.name ? record.member.name : "Unknown"
+        },
+        value: toNumber(getter(record))
+      }))
       .filter((row) => row.value != null)
       .sort((a, b) => b.value - a.value);
     if (limit == null) return sorted;
@@ -1005,9 +1037,12 @@
     const boostersUsed = delta(current.boostersused, historic.boostersused, false);
     const statEnhancers30d = delta(current.statenhancersused, historic.statenhancersused, false);
     const networthGain = delta(current.networth, historic.networth, true);
-    const rankedWarHits30d = delta(current.rankedwarhits, historic.rankedwarhits, false);
-    const attacksWon30d = delta(current.attackswon, historic.attackswon, false);
-    const respectGained30d = delta(current.respectforfaction, historic.respectforfaction, false);
+    let rankedWarHits30d = delta(current.rankedwarhits, historic.rankedwarhits, false);
+    let attacksWon30d = delta(current.attackswon, historic.attackswon, false);
+    let respectGained30d = delta(current.respectforfaction, historic.respectforfaction, false);
+    if (rankedWarHits30d == null && toNumber(current.rankedwarhits) != null) rankedWarHits30d = 0;
+    if (attacksWon30d == null && toNumber(current.attackswon) != null) attacksWon30d = 0;
+    if (respectGained30d == null && toNumber(current.respectforfaction) != null) respectGained30d = 0;
 
     let miscBoosters = null;
     if (boostersUsed != null && cansUsed != null && statEnhancers30d != null) {
@@ -1031,6 +1066,7 @@
       },
       lifetime: {
         timePlayedAllTime: toNumber(current.timeplayed),
+        totalXanax: toNumber(current.xantaken),
         rankedWarHits: toNumber(current.rankedwarhits),
         attacksWon: toNumber(current.attackswon),
         totalRespect: toNumber(current.respectforfaction),
@@ -1116,6 +1152,7 @@
     const topTimePlayedAllTime = byHighest(valid, (row) => row.model.lifetime.timePlayedAllTime);
     const topWarHits = byHighest(valid, (row) => row.model.lifetime.rankedWarHits);
     const topRespect = byHighest(valid, (row) => row.model.lifetime.totalRespect);
+    const topXanaxAllTime = byHighest(valid, (row) => row.model.lifetime.totalXanax);
     const topOverdoses30d = byHighest(valid, (row) => row.model.monthly.overdoses);
     const topOverdosesAllTime = byHighest(valid, (row) => row.model.lifetime.totalOverdoses);
     const topWarHits30d = byHighest(valid, (row) => row.model.monthly.rankedWarHits30d);
@@ -1167,6 +1204,7 @@
         topNetworthAllTime,
         topTimePlayed30d,
         topTimePlayedAllTime,
+        topXanaxAllTime,
         topWarHits,
         topRespect,
         topOverdoses30d,
@@ -1213,7 +1251,7 @@
       return statRow("No data available", "--", null, false, true);
     }
     return rows.map((row, index) => {
-      const name = `${index + 1}. ${formatMemberName(row.record.member)}`;
+      const name = `${index + 1}. ${formatMemberName(row.member)}`;
       return statRow(name, formatter(row.value), null, false, true);
     }).join("");
   }
@@ -1416,6 +1454,7 @@
         ])}
         ${buildLeaderboardGroup("group-drugs", "Drugs", [
           buildLeaderboardSection(`Top Xanax (${WINDOW_DAYS}d)`, "xanax30d", model.leaders.topXanax || [], formatInteger),
+          buildLeaderboardSection("Top Xanax (all-time)", "xanaxAlltime", model.leaders.topXanaxAllTime || [], formatInteger),
           buildLeaderboardSection(`Top Overdoses (${WINDOW_DAYS}d)`, "overdoses30d", model.leaders.topOverdoses30d || [], formatInteger),
           buildLeaderboardSection("Top Overdoses (all-time)", "overdosesAlltime", model.leaders.topOverdosesAllTime || [], formatInteger)
         ])}
@@ -1488,7 +1527,7 @@
       };
     }
 
-    const currentResult = await fetchStatsSnapshot(memberId, CURRENT_STAT_NAMES, null, "Current");
+    const currentResult = await fetchCurrentStatsSnapshot(memberId, CURRENT_STAT_NAMES);
     await sleep(MEMBER_REQUEST_GAP_MS);
     const historicResult = await fetchStatsSnapshot(memberId, MONTHLY_STAT_NAMES, monthAgo, "Historical");
 
@@ -1579,7 +1618,7 @@
     const targetTotal = queue.length;
     let done = 0;
     let failed = 0;
-    let cooldownMs = 0;
+    let cooldownUntil = 0;
 
     const emitProgress = (currentMemberName) => {
       if (typeof onProgress !== "function") return;
@@ -1590,7 +1629,7 @@
         queueRemaining: Math.max(0, targetTotal - done),
         failed,
         current: currentMemberName || "",
-        cooldownMs,
+        cooldownMs: Math.max(0, cooldownUntil - Date.now()),
         isScanning: done < targetTotal,
         model
       });
@@ -1602,58 +1641,72 @@
       const record = { time: Date.now(), version: MODEL_VERSION, model };
       state.factionModelCache.set(context.cacheKey, record);
       pruneTimedCache(state.factionModelCache, MAX_FACTION_CACHE_ENTRIES);
+      saveFactionModelCacheToStorage();
       schedulePersistFactionModelCache();
       return record;
     }
 
-    while (queue.length) {
-      if (shouldContinue && !shouldContinue()) {
-        throw new Error(CANCELLED_ERROR_TOKEN);
-      }
-
-      const item = queue.shift();
-      const currentName = formatMemberName(item.member);
-      cooldownMs = 0;
-
-      try {
-        const row = await fetchMemberIntel(item.member, monthAgo, true);
-        records[item.index] = row;
-      } catch (err) {
-        const message = err && err.message ? err.message : "Failed to fetch member data.";
-        const retryLimit = isRateLimitError(message) ? MAX_RATE_LIMIT_RETRIES : MAX_MEMBER_RETRIES;
-        if (item.retries < retryLimit && isRetryableMemberError(message)) {
-          item.retries += 1;
-          if (isRateLimitError(message)) {
-            cooldownMs = RATE_LIMIT_COOLDOWN_MS * item.retries;
-            emitProgress(currentName);
-            await sleep(cooldownMs);
-          } else {
-            await sleep(350 * item.retries);
-          }
-          queue.push(item);
-          continue;
+    const worker = async () => {
+      while (true) {
+        if (shouldContinue && !shouldContinue()) {
+          throw new Error(CANCELLED_ERROR_TOKEN);
         }
 
-        records[item.index] = {
-          member: item.member,
-          error: message,
-          invalidStats: []
-        };
-        failed += 1;
-      }
+        const pauseMs = Math.max(0, cooldownUntil - Date.now());
+        if (pauseMs > 0) {
+          await sleep(pauseMs);
+        }
 
-      done += 1;
-      emitProgress(currentName);
+        const item = queue.shift();
+        if (!item) return;
 
-      if (queue.length) {
-        await sleep(MEMBER_SCAN_INTERVAL_MS);
+        const currentName = formatMemberName(item.member);
+
+        try {
+          const row = await fetchMemberIntel(item.member, monthAgo, true);
+          records[item.index] = row;
+          done += 1;
+          emitProgress(currentName);
+        } catch (err) {
+          const message = err && err.message ? err.message : "Failed to fetch member data.";
+          const retryLimit = isRateLimitError(message) ? MAX_RATE_LIMIT_RETRIES : MAX_MEMBER_RETRIES;
+          if (item.retries < retryLimit && isRetryableMemberError(message)) {
+            item.retries += 1;
+            if (isRateLimitError(message)) {
+              const waitMs = RATE_LIMIT_COOLDOWN_MS * item.retries;
+              cooldownUntil = Math.max(cooldownUntil, Date.now() + waitMs);
+              emitProgress(currentName);
+            } else {
+              await sleep(350 * item.retries);
+            }
+            queue.push(item);
+          } else {
+            records[item.index] = {
+              member: item.member,
+              error: message,
+              invalidStats: []
+            };
+            failed += 1;
+            done += 1;
+            emitProgress(currentName);
+          }
+        }
+
+        if (queue.length) {
+          await sleep(MEMBER_SCAN_INTERVAL_MS);
+        }
       }
-    }
+    };
+
+    const workers = Array.from({ length: Math.max(1, SCAN_CONCURRENCY) }, () => worker());
+    await Promise.all(workers);
 
     const model = aggregateFactionIntel(basic, members, records);
     const record = { time: Date.now(), version: MODEL_VERSION, model };
     state.factionModelCache.set(context.cacheKey, record);
     pruneTimedCache(state.factionModelCache, MAX_FACTION_CACHE_ENTRIES);
+    saveMemberCacheToStorage();
+    saveFactionModelCacheToStorage();
     schedulePersistFactionModelCache();
     return record;
   }
