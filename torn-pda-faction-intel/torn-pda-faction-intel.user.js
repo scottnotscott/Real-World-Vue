@@ -709,6 +709,7 @@
         respectGained30d
       },
       lifetime: {
+        timePlayedAllTime: toNumber(current.timeplayed),
         rankedWarHits: toNumber(current.rankedwarhits),
         attacksWon: toNumber(current.attackswon),
         totalRespect: toNumber(current.respectforfaction),
@@ -790,6 +791,8 @@
     const topXanax = byHighest(valid, (row) => row.model.monthly.xanaxTaken);
     const topNetworthChange = byHighest(valid, (row) => row.model.monthly.networthGain);
     const topNetworthAllTime = byHighest(valid, (row) => row.model.lifetime.totalNetworth);
+    const topTimePlayed30d = byHighest(valid, (row) => row.model.monthly.timePlayed);
+    const topTimePlayedAllTime = byHighest(valid, (row) => row.model.lifetime.timePlayedAllTime);
     const topWarHits = byHighest(valid, (row) => row.model.lifetime.rankedWarHits);
     const topRespect = byHighest(valid, (row) => row.model.lifetime.totalRespect);
     const topOverdoses30d = byHighest(valid, (row) => row.model.monthly.overdoses);
@@ -841,6 +844,8 @@
         topXanax,
         topNetworthChange,
         topNetworthAllTime,
+        topTimePlayed30d,
+        topTimePlayedAllTime,
         topWarHits,
         topRespect,
         topOverdoses30d,
@@ -1052,6 +1057,8 @@
         ${sectionTable("Coverage", coverageRows)}
         ${sectionTable(`Last ${WINDOW_DAYS} Days`, monthlyRows)}
         ${sectionTable("Current / Lifetime", lifetimeRows)}
+        ${buildLeaderboardSection(`Top Time Played (${WINDOW_DAYS}d)`, "timePlayed30d", model.leaders.topTimePlayed30d || [], formatDuration)}
+        ${buildLeaderboardSection("Top Time Played (all-time)", "timePlayedAllTime", model.leaders.topTimePlayedAllTime || [], formatDuration)}
         ${buildLeaderboardSection(`Top Xanax (${WINDOW_DAYS}d)`, "xanax30d", model.leaders.topXanax || [], formatInteger)}
         ${buildLeaderboardSection(`Networth Change (${WINDOW_DAYS}d)`, "networthChange30d", model.leaders.topNetworthChange || [], formatSignedCompact)}
         ${buildLeaderboardSection("Networth (all-time)", "networthAllTime", model.leaders.topNetworthAllTime || [], formatCompactUnsigned)}
