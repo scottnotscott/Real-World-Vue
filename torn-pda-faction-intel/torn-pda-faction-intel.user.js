@@ -23,11 +23,15 @@
   const WINDOW_DAYS = 30;
   const WINDOW_SECONDS = WINDOW_DAYS * 86400;
   const POLL_INTERVAL_MS = 1200;
-  const FACTION_CACHE_TTL_MS = 5 * 60 * 1000;
+  const FACTION_CACHE_TTL_MS = 30 * 1000;
   const MEMBER_CACHE_TTL_MS = 20 * 60 * 1000;
+  const FORCE_REFRESH_CACHE_TTL_MS = 6 * 60 * 1000;
+  const MEMBER_SCAN_INTERVAL_MS = 1500;
+  const MEMBER_REQUEST_GAP_MS = 220;
+  const RATE_LIMIT_COOLDOWN_MS = 18000;
+  const MAX_RATE_LIMIT_RETRIES = 2;
   const MAX_FACTION_CACHE_ENTRIES = 12;
   const MAX_MEMBER_CACHE_ENTRIES = 650;
-  const MEMBER_CONCURRENCY = 2;
   const LEADERBOARD_LIMIT = 3;
   const CANCELLED_ERROR_TOKEN = "__tpda_cancelled__";
 
@@ -40,21 +44,24 @@
     "nerverefills",
     "boostersused",
     "statenhancersused",
-    "networth"
-  ];
-
-  const CURRENT_STAT_NAMES = [
-    ...MONTHLY_STAT_NAMES,
+    "networth",
     "rankedwarhits",
     "attackswon",
     "respectforfaction"
   ];
+
+  const CURRENT_STAT_NAMES = Array.from(new Set([...MONTHLY_STAT_NAMES]));
 
   const state = {
     context: null,
     requestId: 0,
     root: null,
     collapsed: true,
+    activeModel: null,
+    activeProgress: null,
+    activeContext: null,
+    expandedTables: new Set(),
+    invalidStatNames: new Set(),
     factionCache: new Map(),
     memberCache: new Map()
   };
@@ -156,6 +163,11 @@
         line-height: 1.1;
         min-height: 21px;
       }
+      #${SCRIPT_ID} .tpda-btn.tpda-mini {
+        padding: 1px 6px;
+        font-size: 10px;
+        min-height: 18px;
+      }
       #${SCRIPT_ID} .tpda-btn:active {
         transform: translateY(1px);
       }
@@ -178,8 +190,15 @@
       #${SCRIPT_ID} .tpda-section {
         margin-top: 7px;
       }
-      #${SCRIPT_ID} .tpda-section-title {
+      #${SCRIPT_ID} .tpda-section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
         margin: 0 0 4px;
+      }
+      #${SCRIPT_ID} .tpda-section-title {
+        margin: 0;
         font-size: 11px;
         font-weight: 700;
         color: #d7d7d7;
@@ -431,6 +450,20 @@
     return Number.isFinite(numeric) ? numeric : null;
   }
 
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms || 0)));
+  }
+
+  function isRateLimitError(message) {
+    const text = String(message || "").toLowerCase();
+    return (
+      text.includes("too many requests") ||
+      text.includes("rate limit") ||
+      text.includes("[5]") ||
+      text.includes("[16]")
+    );
+  }
+
   async function apiGet(path, params) {
     const url = new URL(`${API_BASE_URL}${path}`);
     if (isApiKeyReady()) {
@@ -497,7 +530,14 @@
   }
 
   async function fetchStatsSnapshot(profileId, statNames, timestamp, requestLabel) {
-    const chunks = chunkList(statNames, 10);
+    const requested = (Array.isArray(statNames) ? statNames : [])
+      .map((name) => String(name || "").toLowerCase())
+      .filter((name) => !!name && !state.invalidStatNames.has(name));
+    if (!requested.length) {
+      return { stats: {}, invalidStats: [] };
+    }
+
+    const chunks = chunkList(requested, 10);
     const merged = {};
     const invalidStats = [];
 
@@ -525,6 +565,7 @@
           const innerMessage = innerErr && innerErr.message ? innerErr.message : "Unknown API failure.";
           if (isInvalidStatError(innerMessage)) {
             invalidStats.push(statName);
+            state.invalidStatNames.add(String(statName || "").toLowerCase());
           } else {
             throw new Error(`${requestLabel} stat '${statName}' failed: ${innerMessage}`);
           }
@@ -610,11 +651,21 @@
   }
 
   function byHighest(records, getter, limit) {
-    return records
+    const sorted = records
       .map((record) => ({ record, value: toNumber(getter(record)) }))
       .filter((row) => row.value != null)
-      .sort((a, b) => b.value - a.value)
-      .slice(0, limit == null ? 5 : limit);
+      .sort((a, b) => b.value - a.value);
+    if (limit == null) return sorted;
+    return sorted.slice(0, limit);
+  }
+
+  function byLowest(records, getter, limit) {
+    const sorted = records
+      .map((record) => ({ record, value: toNumber(getter(record)) }))
+      .filter((row) => row.value != null)
+      .sort((a, b) => a.value - b.value);
+    if (limit == null) return sorted;
+    return sorted.slice(0, limit);
   }
 
   function buildMemberModel(current, historic, member) {
@@ -627,6 +678,9 @@
     const boostersUsed = delta(current.boostersused, historic.boostersused, false);
     const statEnhancers30d = delta(current.statenhancersused, historic.statenhancersused, false);
     const networthGain = delta(current.networth, historic.networth, true);
+    const rankedWarHits30d = delta(current.rankedwarhits, historic.rankedwarhits, false);
+    const attacksWon30d = delta(current.attackswon, historic.attackswon, false);
+    const respectGained30d = delta(current.respectforfaction, historic.respectforfaction, false);
 
     let miscBoosters = null;
     if (boostersUsed != null && cansUsed != null && statEnhancers30d != null) {
@@ -643,14 +697,17 @@
         refillNerve,
         miscBoosters,
         networthGain,
-        statEnhancers30d
+        statEnhancers30d,
+        rankedWarHits30d,
+        attacksWon30d,
+        respectGained30d
       },
       lifetime: {
         rankedWarHits: toNumber(current.rankedwarhits),
         attacksWon: toNumber(current.attackswon),
         totalRespect: toNumber(current.respectforfaction),
         totalNetworth: toNumber(current.networth),
-        totalWorkStats: toNumber(current.totalworkingstats),
+        totalOverdoses: toNumber(current.overdosed),
         daysInFaction: toNumber(member ? member.days_in_faction : null)
       }
     };
@@ -693,11 +750,14 @@
     const aMiscBoosters = sumAccumulator();
     const aNetworthGain = sumAccumulator();
     const aStatEnhancers30d = sumAccumulator();
+    const aWarHits30d = sumAccumulator();
+    const aAttacksWon30d = sumAccumulator();
+    const aRespectGained30d = sumAccumulator();
     const aWarHits = sumAccumulator();
     const aAttacksWon = sumAccumulator();
     const aRespect = sumAccumulator();
+    const aOverdosesAllTime = sumAccumulator();
     const aTotalNetworth = sumAccumulator();
-    const aWorkStats = sumAccumulator();
     const aDaysInFaction = sumAccumulator();
 
     for (const row of valid) {
@@ -710,18 +770,28 @@
       includeAccumulator(aMiscBoosters, row.model.monthly.miscBoosters);
       includeAccumulator(aNetworthGain, row.model.monthly.networthGain);
       includeAccumulator(aStatEnhancers30d, row.model.monthly.statEnhancers30d);
+      includeAccumulator(aWarHits30d, row.model.monthly.rankedWarHits30d);
+      includeAccumulator(aAttacksWon30d, row.model.monthly.attacksWon30d);
+      includeAccumulator(aRespectGained30d, row.model.monthly.respectGained30d);
       includeAccumulator(aWarHits, row.model.lifetime.rankedWarHits);
       includeAccumulator(aAttacksWon, row.model.lifetime.attacksWon);
       includeAccumulator(aRespect, row.model.lifetime.totalRespect);
+      includeAccumulator(aOverdosesAllTime, row.model.lifetime.totalOverdoses);
       includeAccumulator(aTotalNetworth, row.model.lifetime.totalNetworth);
-      includeAccumulator(aWorkStats, row.model.lifetime.totalWorkStats);
       includeAccumulator(aDaysInFaction, row.model.lifetime.daysInFaction);
     }
 
-    const topXanax = byHighest(valid, (row) => row.model.monthly.xanaxTaken, LEADERBOARD_LIMIT);
-    const topNetworthGain = byHighest(valid, (row) => row.model.monthly.networthGain, LEADERBOARD_LIMIT);
-    const topWarHits = byHighest(valid, (row) => row.model.lifetime.rankedWarHits, LEADERBOARD_LIMIT);
-    const topRespect = byHighest(valid, (row) => row.model.lifetime.totalRespect, LEADERBOARD_LIMIT);
+    const topXanax = byHighest(valid, (row) => row.model.monthly.xanaxTaken);
+    const topNetworthGain = byHighest(valid, (row) => row.model.monthly.networthGain);
+    const lowestNetworthGain = byLowest(valid, (row) => row.model.monthly.networthGain);
+    const networthLosers = lowestNetworthGain.filter((row) => row.value < 0);
+    const topWarHits = byHighest(valid, (row) => row.model.lifetime.rankedWarHits);
+    const topRespect = byHighest(valid, (row) => row.model.lifetime.totalRespect);
+    const topOverdoses30d = byHighest(valid, (row) => row.model.monthly.overdoses);
+    const topOverdosesAllTime = byHighest(valid, (row) => row.model.lifetime.totalOverdoses);
+    const topWarHits30d = byHighest(valid, (row) => row.model.monthly.rankedWarHits30d);
+    const topAttacksWon30d = byHighest(valid, (row) => row.model.monthly.attacksWon30d);
+    const topRespectGained30d = byHighest(valid, (row) => row.model.monthly.respectGained30d);
 
     return {
       faction: {
@@ -745,11 +815,14 @@
         miscBoosters: aMiscBoosters.sum,
         networthGain: aNetworthGain.sum,
         statEnhancers30d: aStatEnhancers30d.sum,
+        rankedWarHits30d: aWarHits30d.sum,
+        attacksWon30d: aAttacksWon30d.sum,
+        respectGained30d: aRespectGained30d.sum,
         rankedWarHits: aWarHits.sum,
         attacksWon: aAttacksWon.sum,
         totalRespect: aRespect.sum,
+        totalOverdoses: aOverdosesAllTime.sum,
         totalNetworth: aTotalNetworth.sum,
-        totalWorkStats: aWorkStats.sum,
         daysInFaction: aDaysInFaction.sum
       },
       averages: {
@@ -762,8 +835,14 @@
       leaders: {
         topXanax,
         topNetworthGain,
+        networthLosers: networthLosers.length ? networthLosers : lowestNetworthGain,
         topWarHits,
-        topRespect
+        topRespect,
+        topOverdoses30d,
+        topOverdosesAllTime,
+        topWarHits30d,
+        topAttacksWon30d,
+        topRespectGained30d
       },
       failedMembers: failed.map((row) => ({
         id: row.member && row.member.id != null ? String(row.member.id) : "",
@@ -786,10 +865,13 @@
     `;
   }
 
-  function sectionTable(title, rowsHtml) {
+  function sectionTable(title, rowsHtml, actionHtml) {
     return `
       <div class="tpda-section">
-        <div class="tpda-section-title">${escapeHtml(title)}</div>
+        <div class="tpda-section-head">
+          <div class="tpda-section-title">${escapeHtml(title)}</div>
+          ${actionHtml || ""}
+        </div>
         <div class="tpda-table">${rowsHtml}</div>
       </div>
     `;
@@ -803,6 +885,16 @@
       const name = `${index + 1}. ${formatMemberName(row.record.member)}`;
       return statRow(name, formatter(row.value), null, false, true);
     }).join("");
+  }
+
+  function buildLeaderboardSection(title, tableKey, rows, formatter) {
+    const expanded = state.expandedTables.has(tableKey);
+    const visible = expanded ? rows : rows.slice(0, LEADERBOARD_LIMIT);
+    const rowsHtml = leaderboardRows(visible, formatter);
+    const actionHtml = rows.length > LEADERBOARD_LIMIT
+      ? `<button class="tpda-btn tpda-mini" data-action="toggle-table" data-table="${escapeHtml(tableKey)}">${expanded ? "Less" : `All (${rows.length})`}</button>`
+      : "";
+    return sectionTable(title, rowsHtml, actionHtml);
   }
 
   function renderLoading(context, progress) {
@@ -856,9 +948,12 @@
     applyCollapsedUiState();
   }
 
-  function renderStats(context, model) {
+  function renderStats(context, model, progress) {
     const root = ensureRoot();
     if (!root) return;
+    state.activeContext = context ? Object.assign({}, context) : null;
+    state.activeModel = model || null;
+    state.activeProgress = progress || null;
 
     const coverage = model.coverage;
     const totals = model.totals;
@@ -878,6 +973,17 @@
     }
     const warning = warningParts.length
       ? `<div class="tpda-status is-error">${escapeHtml(warningParts.join(" | "))}</div>`
+      : "";
+
+    const scanInfo = progress && progress.isScanning
+      ? `
+        <div class="tpda-status is-info">
+          ${escapeHtml(`Background scan: ${progress.done} / ${progress.total} members processed (${progress.queueRemaining} queued). Coverage: ${coverage.scannedMembers} / ${coverage.totalMembers}.`)}
+          ${progress.current ? `<div class="tpda-row-meta">${escapeHtml(`Now scanning: ${progress.current}`)}</div>` : ""}
+          ${progress.cooldownMs ? `<div class="tpda-row-meta">${escapeHtml(`Rate limit cooldown: ${Math.ceil(progress.cooldownMs / 1000)}s`)}</div>` : ""}
+          <div class="tpda-progress-wrap"><div class="tpda-progress-fill" style="width:${Math.max(0, Math.min(100, Math.round((progress.done / Math.max(1, progress.total)) * 100)))}%"></div></div>
+        </div>
+      `
       : "";
 
     const quickRows = [
@@ -905,13 +1011,17 @@
       statRow("Refills", `${formatInteger(totals.refillEnergy)} E + ${formatInteger(totals.refillNerve)} N`, null, true, false),
       statRow("Misc Boosters", formatInteger(totals.miscBoosters), null, true, false),
       statRow("Networth Gain", formatCurrencyCompact(totals.networthGain), `Avg/member ${formatCurrencyCompact(averages.networthGainPerMember)}`, true, false),
-      statRow("Stat Enhancers", formatInteger(totals.statEnhancers30d), null, true, false)
+      statRow("Stat Enhancers", formatInteger(totals.statEnhancers30d), null, true, false),
+      statRow("RW Hits Gained", formatInteger(totals.rankedWarHits30d), null, true, false),
+      statRow("Attacks Won Gained", formatInteger(totals.attacksWon30d), null, true, false),
+      statRow("Respect Gained", formatInteger(totals.respectGained30d), null, true, false)
     ].join("");
 
     const lifetimeRows = [
       statRow("Ranked War Hits", formatInteger(totals.rankedWarHits), null, false, false),
       statRow("Attacks Won", formatInteger(totals.attacksWon), null, false, false),
       statRow("Total Respect", formatInteger(totals.totalRespect), null, false, false),
+      statRow("All-time Overdoses", formatInteger(totals.totalOverdoses), null, false, false),
       statRow("Total Networth", formatCurrencyCompact(totals.totalNetworth), null, false, false),
       statRow("Avg Days in Faction", decimal(averages.avgDaysInFaction, 1), null, false, false)
     ].join("");
@@ -928,6 +1038,7 @@
         </div>
       </div>
       ${warning}
+      ${scanInfo}
       <div class="tpda-compact">
         ${sectionTable("Quick View", quickRows)}
         <div class="tpda-expand-hint">Tap Expand for full faction intel.</div>
@@ -936,10 +1047,16 @@
         ${sectionTable("Coverage", coverageRows)}
         ${sectionTable(`Last ${WINDOW_DAYS} Days`, monthlyRows)}
         ${sectionTable("Current / Lifetime", lifetimeRows)}
-        ${sectionTable(`Top Xanax (${WINDOW_DAYS}d)`, leaderboardRows(model.leaders.topXanax, formatInteger))}
-        ${sectionTable(`Top Networth Gain (${WINDOW_DAYS}d)`, leaderboardRows(model.leaders.topNetworthGain, formatCurrencyCompact))}
-        ${sectionTable("Top Ranked War Hits", leaderboardRows(model.leaders.topWarHits, formatInteger))}
-        ${sectionTable("Top Respect for Faction", leaderboardRows(model.leaders.topRespect, formatInteger))}
+        ${buildLeaderboardSection(`Top Xanax (${WINDOW_DAYS}d)`, "xanax30d", model.leaders.topXanax || [], formatInteger)}
+        ${buildLeaderboardSection(`Top Networth Gain (${WINDOW_DAYS}d)`, "networthGain30d", model.leaders.topNetworthGain || [], formatCurrencyCompact)}
+        ${buildLeaderboardSection(`Networth Losers (${WINDOW_DAYS}d)`, "networthLosers30d", model.leaders.networthLosers || [], formatCurrencyCompact)}
+        ${buildLeaderboardSection(`Top Overdoses (${WINDOW_DAYS}d)`, "overdoses30d", model.leaders.topOverdoses30d || [], formatInteger)}
+        ${buildLeaderboardSection("Top Overdoses (all-time)", "overdosesAlltime", model.leaders.topOverdosesAllTime || [], formatInteger)}
+        ${buildLeaderboardSection(`Top RW Hits Gained (${WINDOW_DAYS}d)`, "warHits30d", model.leaders.topWarHits30d || [], formatInteger)}
+        ${buildLeaderboardSection(`Top Attacks Won Gained (${WINDOW_DAYS}d)`, "attacksWon30d", model.leaders.topAttacksWon30d || [], formatInteger)}
+        ${buildLeaderboardSection(`Top Respect Gained (${WINDOW_DAYS}d)`, "respect30d", model.leaders.topRespectGained30d || [], formatInteger)}
+        ${buildLeaderboardSection("Top Ranked War Hits (all-time)", "warHitsAllTime", model.leaders.topWarHits || [], formatInteger)}
+        ${buildLeaderboardSection("Top Respect for Faction (all-time)", "respectAllTime", model.leaders.topRespect || [], formatInteger)}
       </div>
       <div class="tpda-footnote">This panel scans faction members, fetches their public personal stats, and aggregates totals for faction intel. Gold values are ${WINDOW_DAYS}-day activity deltas.</div>
     `;
@@ -985,10 +1102,9 @@
       };
     }
 
-    const [currentResult, historicResult] = await Promise.all([
-      fetchStatsSnapshot(memberId, CURRENT_STAT_NAMES, null, "Current"),
-      fetchStatsSnapshot(memberId, MONTHLY_STAT_NAMES, monthAgo, "Historical")
-    ]);
+    const currentResult = await fetchStatsSnapshot(memberId, CURRENT_STAT_NAMES, null, "Current");
+    await sleep(MEMBER_REQUEST_GAP_MS);
+    const historicResult = await fetchStatsSnapshot(memberId, MONTHLY_STAT_NAMES, monthAgo, "Historical");
 
     const model = buildMemberModel(currentResult.stats || {}, historicResult.stats || {}, member);
     const invalidStats = Array.from(new Set([
@@ -1010,107 +1126,134 @@
     };
   }
 
-  async function mapWithConcurrency(items, concurrency, mapper, shouldContinue) {
-    const results = new Array(items.length);
-    let cursor = 0;
-    let cancelled = false;
-
-    const worker = async () => {
-      while (true) {
-        if (cancelled) return;
-        if (shouldContinue && !shouldContinue()) {
-          cancelled = true;
-          return;
-        }
-        const index = cursor++;
-        if (index >= items.length) return;
-        results[index] = await mapper(items[index], index);
-      }
-    };
-
-    const workerCount = Math.max(1, Math.min(concurrency, items.length || 1));
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
-    return { results, cancelled };
-  }
-
-  async function fetchFactionData(context, force, onProgress, shouldContinue) {
+  async function fetchFactionOverview(context, force) {
     const cacheKey = context.cacheKey;
     const cached = state.factionCache.get(cacheKey);
     if (!force && cached && (Date.now() - cached.time) < FACTION_CACHE_TTL_MS) {
       return cached;
     }
-
     const [basicPayload, membersPayload] = await Promise.all([
       fetchFactionBasics(context),
       fetchFactionMembers(context)
     ]);
-    const basic = basicPayload && basicPayload.basic ? basicPayload.basic : null;
-    const members = Array.isArray(membersPayload && membersPayload.members) ? membersPayload.members : [];
-    const monthAgo = Math.floor(Date.now() / 1000) - WINDOW_SECONDS;
+    const overview = {
+      time: Date.now(),
+      basic: basicPayload && basicPayload.basic ? basicPayload.basic : null,
+      members: Array.isArray(membersPayload && membersPayload.members) ? membersPayload.members : []
+    };
+    state.factionCache.set(cacheKey, overview);
+    pruneTimedCache(state.factionCache, MAX_FACTION_CACHE_ENTRIES);
+    return overview;
+  }
 
-    let done = 0;
-    let failed = 0;
-
-    const mapped = await mapWithConcurrency(
-      members,
-      MEMBER_CONCURRENCY,
-      async (member) => {
-        if (shouldContinue && !shouldContinue()) {
-          return { cancelled: true };
-        }
-        let row;
-        try {
-          row = await fetchMemberIntel(member, monthAgo, force);
-        } catch (err) {
-          const message = err && err.message ? err.message : "Failed to fetch member data.";
-          row = {
-            member,
-            error: message,
-            invalidStats: []
-          };
-          failed += 1;
-        }
-        done += 1;
-        if (typeof onProgress === "function") {
-          onProgress({
-            done,
-            total: members.length,
-            failed,
-            current: formatMemberName(member)
-          });
-        }
-        return row;
-      },
-      shouldContinue
-    );
-
-    if (mapped.cancelled || (shouldContinue && !shouldContinue())) {
+  async function fetchFactionData(context, force, onProgress, shouldContinue) {
+    const overview = await fetchFactionOverview(context, !!force);
+    if (shouldContinue && !shouldContinue()) {
       throw new Error(CANCELLED_ERROR_TOKEN);
     }
 
-    const records = mapped.results.map((row, index) => {
-      if (row && row.cancelled) {
-        return {
-          member: members[index],
-          error: "Cancelled"
+    const basic = overview.basic;
+    const members = overview.members;
+    const now = Date.now();
+    const monthAgo = Math.floor(now / 1000) - WINDOW_SECONDS;
+    const refreshTtl = force ? FORCE_REFRESH_CACHE_TTL_MS : MEMBER_CACHE_TTL_MS;
+
+    const records = new Array(members.length);
+    const queue = [];
+
+    for (let i = 0; i < members.length; i += 1) {
+      const member = members[i];
+      const memberId = member && member.id != null ? String(member.id) : "";
+      const cached = memberId ? state.memberCache.get(memberId) : null;
+      const age = cached ? (now - cached.time) : Number.POSITIVE_INFINITY;
+
+      if (cached && cached.model) {
+        records[i] = {
+          member,
+          model: cached.model,
+          invalidStats: cached.invalidStats || []
         };
+      } else {
+        records[i] = { member };
       }
-      return row;
-    });
+
+      if (!cached || age >= refreshTtl) {
+        queue.push({ member, index: i, retries: 0 });
+      }
+    }
+
+    let done = 0;
+    let failed = records.filter((row) => row && row.error).length;
+    let cooldownMs = 0;
+
+    const emitProgress = (currentMemberName) => {
+      if (typeof onProgress !== "function") return;
+      const model = aggregateFactionIntel(basic, members, records);
+      onProgress({
+        done,
+        total: queue.length,
+        queueRemaining: Math.max(0, queue.length - done),
+        failed,
+        current: currentMemberName || "",
+        cooldownMs,
+        isScanning: done < queue.length,
+        model
+      });
+    };
+
+    emitProgress("");
+    if (!queue.length) {
+      const model = aggregateFactionIntel(basic, members, records);
+      return { time: Date.now(), model };
+    }
+
+    for (let idx = 0; idx < queue.length; idx += 1) {
+      if (shouldContinue && !shouldContinue()) {
+        throw new Error(CANCELLED_ERROR_TOKEN);
+      }
+
+      const item = queue[idx];
+      const currentName = formatMemberName(item.member);
+      cooldownMs = 0;
+
+      try {
+        const row = await fetchMemberIntel(item.member, monthAgo, true);
+        records[item.index] = row;
+      } catch (err) {
+        const message = err && err.message ? err.message : "Failed to fetch member data.";
+        if (isRateLimitError(message) && item.retries < MAX_RATE_LIMIT_RETRIES) {
+          item.retries += 1;
+          cooldownMs = RATE_LIMIT_COOLDOWN_MS * item.retries;
+          emitProgress(currentName);
+          await sleep(cooldownMs);
+          idx -= 1;
+          continue;
+        }
+
+        records[item.index] = {
+          member: item.member,
+          error: message,
+          invalidStats: []
+        };
+        failed += 1;
+      }
+
+      done += 1;
+      emitProgress(currentName);
+
+      if (idx < queue.length - 1) {
+        await sleep(MEMBER_SCAN_INTERVAL_MS);
+      }
+    }
 
     const model = aggregateFactionIntel(basic, members, records);
-    const record = {
-      time: Date.now(),
-      model
-    };
-    state.factionCache.set(cacheKey, record);
-    pruneTimedCache(state.factionCache, MAX_FACTION_CACHE_ENTRIES);
-    return record;
+    return { time: Date.now(), model };
   }
 
   async function loadFaction(context, force) {
     const thisRequestId = ++state.requestId;
     const contextCopy = Object.assign({}, context);
+    state.activeContext = contextCopy;
 
     if (!isApiKeyReady()) {
       renderError(contextCopy, "PDA API key is missing. Keep API_KEY as the PDA placeholder token and install this script through Torn PDA UserScripts.");
@@ -1125,7 +1268,11 @@
         !!force,
         (progress) => {
           if (thisRequestId !== state.requestId) return;
-          renderLoading(contextCopy, progress);
+          if (progress && progress.model) {
+            renderStats(contextCopy, progress.model, progress);
+          } else {
+            renderLoading(contextCopy, progress);
+          }
         },
         () => thisRequestId === state.requestId
       );
@@ -1133,7 +1280,15 @@
       contextCopy.name = record.model && record.model.faction && record.model.faction.name
         ? record.model.faction.name
         : contextCopy.name;
-      renderStats(contextCopy, record.model);
+      renderStats(contextCopy, record.model, {
+        isScanning: false,
+        done: 0,
+        total: 0,
+        queueRemaining: 0,
+        failed: record.model && record.model.coverage ? record.model.coverage.failedMembers : 0,
+        current: "",
+        cooldownMs: 0
+      });
     } catch (err) {
       if (thisRequestId !== state.requestId) return;
       const message = err && err.message ? err.message : "Failed to load faction intel.";
@@ -1147,6 +1302,21 @@
     if (refreshButton) {
       if (!state.context) return;
       loadFaction(state.context, true);
+      return;
+    }
+
+    const tableToggleButton = event.target.closest("button[data-action='toggle-table']");
+    if (tableToggleButton) {
+      const tableKey = tableToggleButton.getAttribute("data-table");
+      if (!tableKey) return;
+      if (state.expandedTables.has(tableKey)) {
+        state.expandedTables.delete(tableKey);
+      } else {
+        state.expandedTables.add(tableKey);
+      }
+      if (state.activeContext && state.activeModel) {
+        renderStats(state.activeContext, state.activeModel, state.activeProgress);
+      }
       return;
     }
 
