@@ -17,9 +17,9 @@
   const SCRIPT_ID = "tpda-faction-intel-panel";
   const STYLE_ID = "tpda-faction-intel-style";
   const COLLAPSED_STORAGE_KEY = "tpda_faction_intel_collapsed_v1";
-  const GROUP_COLLAPSE_STORAGE_KEY = "tpda_faction_intel_group_collapsed_v2";
-  const MEMBER_CACHE_STORAGE_KEY = "tpda_faction_intel_member_cache_v4";
-  const FACTION_MODEL_CACHE_STORAGE_KEY = "tpda_faction_intel_faction_model_cache_v4";
+  const GROUP_COLLAPSE_STORAGE_KEY = "tpda_faction_intel_group_collapsed_v3";
+  const MEMBER_CACHE_STORAGE_KEY = "tpda_faction_intel_member_cache_v5";
+  const FACTION_MODEL_CACHE_STORAGE_KEY = "tpda_faction_intel_faction_model_cache_v5";
   const API_BASE_URL = "https://api.torn.com/v2";
   const API_KEY = "###PDA-APIKEY###";
   const API_KEY_PLACEHOLDER = `${"#".repeat(3)}PDA-APIKEY${"#".repeat(3)}`;
@@ -38,7 +38,7 @@
   const MAX_FACTION_CACHE_ENTRIES = 12;
   const MAX_MEMBER_CACHE_ENTRIES = 650;
   const LEADERBOARD_LIMIT = 3;
-  const MODEL_VERSION = 4;
+  const MODEL_VERSION = 5;
   const CANCELLED_ERROR_TOKEN = "__tpda_cancelled__";
 
   const DEFAULT_COLLAPSED_SECTION_KEYS = [
@@ -46,6 +46,7 @@
     "section-last30",
     "section-lifetime",
     "group-time-activity",
+    "group-drugs",
     "group-finance",
     "group-combat-30d",
     "group-combat-alltime"
@@ -337,18 +338,37 @@
       }
       #${SCRIPT_ID} .tpda-group {
         margin-top: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        padding: 6px;
+        background: rgba(255, 255, 255, 0.02);
+      }
+      #${SCRIPT_ID} .tpda-group.is-plain {
+        border: none;
+        border-radius: 0;
+        padding: 0;
+        background: transparent;
       }
       #${SCRIPT_ID} .tpda-group-head {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 6px;
-        margin: 0 0 4px;
+        margin: 0 0 5px;
+        padding-bottom: 5px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
       }
       #${SCRIPT_ID} .tpda-group-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 6px;
+      }
+      #${SCRIPT_ID} .tpda-group-body {
+        margin-top: 4px;
+      }
+      #${SCRIPT_ID} .tpda-group.is-plain .tpda-group-head {
+        border-bottom: none;
+        padding-bottom: 0;
       }
       #${SCRIPT_ID} .tpda-group.is-collapsed .tpda-group-body {
         display: none;
@@ -490,20 +510,16 @@
     ];
     for (const selector of targetedSelectors) {
       const candidates = Array.from(document.querySelectorAll(selector));
+      let fallback = null;
       for (const candidate of candidates) {
         if (!isElementVisible(candidate)) continue;
-        const text = String(candidate.textContent || "").trim();
+        const text = String(candidate.textContent || "").replace(/\s+/g, " ").trim();
         if (!text) continue;
-        return candidate;
+        if (text.toLowerCase() === "faction") continue;
+        if (/\d/.test(text)) return candidate;
+        if (!fallback) fallback = candidate;
       }
-    }
-
-    const headingSelectors = "#mainContainer h2, #mainContainer h3, #mainContainer h4, #mainContainer h5, #mainContainer .title";
-    const headingCandidates = Array.from(document.querySelectorAll(headingSelectors));
-    for (const candidate of headingCandidates) {
-      if (!isElementVisible(candidate)) continue;
-      const text = String(candidate.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
-      if (text === "faction") return candidate;
+      if (fallback) return fallback;
     }
 
     return findMountTarget();
@@ -615,6 +631,17 @@
 
   function ensureSpyButton() {
     ensureStyle();
+    const existingButtons = Array.from(document.querySelectorAll("#tpda-faction-intel-spy-btn"));
+    if (!state.spyButton && existingButtons.length) {
+      state.spyButton = existingButtons[0];
+      state.spyButton.addEventListener("click", handleSpyButtonClick);
+    }
+    if (existingButtons.length > 1) {
+      for (let i = 1; i < existingButtons.length; i += 1) {
+        existingButtons[i].parentNode && existingButtons[i].parentNode.removeChild(existingButtons[i]);
+      }
+    }
+
     if (!state.spyButton) {
       const button = document.createElement("button");
       button.id = "tpda-faction-intel-spy-btn";
@@ -807,7 +834,7 @@
       return { stats: {}, invalidStats: [] };
     }
 
-    const maxPerChunk = timestamp == null ? Math.max(1, requested.length) : 10;
+    const maxPerChunk = 10;
     const chunks = chunkList(requested, maxPerChunk);
     const merged = {};
     const invalidStats = [];
@@ -817,7 +844,30 @@
 
       try {
         const payload = await apiGet(`/user/${profileId}/personalstats`, params);
-        Object.assign(merged, normalizeStatBlock(payload ? payload.personalstats : null));
+        const normalized = normalizeStatBlock(payload ? payload.personalstats : null);
+        Object.assign(merged, normalized);
+
+        if (timestamp == null) {
+          const missingStats = chunk.filter((name) => {
+            const key = String(name || "").toLowerCase();
+            return !Object.prototype.hasOwnProperty.call(normalized, key);
+          });
+          for (const missingStat of missingStats) {
+            const singleParams = { stat: [missingStat] };
+            try {
+              const singlePayload = await apiGet(`/user/${profileId}/personalstats`, singleParams);
+              Object.assign(merged, normalizeStatBlock(singlePayload ? singlePayload.personalstats : null));
+            } catch (singleErr) {
+              const singleMessage = singleErr && singleErr.message ? singleErr.message : "Unknown API failure.";
+              if (isInvalidStatError(singleMessage)) {
+                invalidStats.push(missingStat);
+                state.invalidStatNames.add(String(missingStat || "").toLowerCase());
+              } else {
+                throw new Error(`${requestLabel} stat '${missingStat}' failed: ${singleMessage}`);
+              }
+            }
+          }
+        }
         continue;
       } catch (err) {
         const message = err && err.message ? err.message : "Unknown API failure.";
@@ -1178,11 +1228,11 @@
     return sectionTable(title, rowsHtml, actionHtml);
   }
 
-  function buildCollapsibleTableSection(sectionKey, title, rowsHtml) {
+  function buildCollapsibleTableSection(sectionKey, title, rowsHtml, plainStyle) {
     const collapsed = state.collapsedGroups.has(sectionKey);
-    const actionHtml = `<button class="tpda-btn tpda-mini" data-action="toggle-group" data-group="${escapeHtml(sectionKey)}">${collapsed ? "Show" : "Hide"}</button>`;
+    const actionHtml = `<button class="tpda-btn tpda-mini" data-action="toggle-group" data-group="${escapeHtml(sectionKey)}">${collapsed ? "Expand" : "Collapse"}</button>`;
     return `
-      <div class="tpda-group${collapsed ? " is-collapsed" : ""}">
+      <div class="tpda-group${plainStyle ? " is-plain" : ""}${collapsed ? " is-collapsed" : ""}">
         <div class="tpda-group-head">
           <div class="tpda-section-title">${escapeHtml(title)}</div>
           ${actionHtml}
@@ -1201,7 +1251,7 @@
       <div class="tpda-group${collapsed ? " is-collapsed" : ""}">
         <div class="tpda-group-head">
           <div class="tpda-section-title">${escapeHtml(title)}</div>
-          <button class="tpda-btn tpda-mini" data-action="toggle-group" data-group="${escapeHtml(groupKey)}">${collapsed ? "Show" : "Hide"}</button>
+          <button class="tpda-btn tpda-mini" data-action="toggle-group" data-group="${escapeHtml(groupKey)}">${collapsed ? "Expand" : "Collapse"}</button>
         </div>
         <div class="tpda-group-body">
           <div class="tpda-group-grid">${sections}</div>
@@ -1358,11 +1408,13 @@
       </div>
       <div class="tpda-expanded">
         ${buildCollapsibleTableSection("section-coverage", "Coverage", coverageRows)}
-        ${buildCollapsibleTableSection("section-last30", `Last ${WINDOW_DAYS} Days`, monthlyRows)}
+        ${buildCollapsibleTableSection("section-last30", `Last ${WINDOW_DAYS} Days`, monthlyRows, true)}
         ${buildCollapsibleTableSection("section-lifetime", "Current / Lifetime", lifetimeRows)}
         ${buildLeaderboardGroup("group-time-activity", "Time & Activity", [
           buildLeaderboardSection(`Top Time Played (${WINDOW_DAYS}d)`, "timePlayed30d", model.leaders.topTimePlayed30d || [], formatDuration),
-          buildLeaderboardSection("Top Time Played (all-time)", "timePlayedAllTime", model.leaders.topTimePlayedAllTime || [], formatDuration),
+          buildLeaderboardSection("Top Time Played (all-time)", "timePlayedAllTime", model.leaders.topTimePlayedAllTime || [], formatDuration)
+        ])}
+        ${buildLeaderboardGroup("group-drugs", "Drugs", [
           buildLeaderboardSection(`Top Xanax (${WINDOW_DAYS}d)`, "xanax30d", model.leaders.topXanax || [], formatInteger),
           buildLeaderboardSection(`Top Overdoses (${WINDOW_DAYS}d)`, "overdoses30d", model.leaders.topOverdoses30d || [], formatInteger),
           buildLeaderboardSection("Top Overdoses (all-time)", "overdosesAlltime", model.leaders.topOverdosesAllTime || [], formatInteger)
@@ -1372,7 +1424,7 @@
           buildLeaderboardSection("Networth (all-time)", "networthAllTime", model.leaders.topNetworthAllTime || [], formatCompactUnsigned)
         ])}
         ${buildLeaderboardGroup("group-combat-30d", `Combat (${WINDOW_DAYS}d gains)`, [
-          buildLeaderboardSection(`Top RW Hits Gained (${WINDOW_DAYS}d)`, "warHits30d", model.leaders.topWarHits30d || [], formatInteger),
+          buildLeaderboardSection(`Top Ranked War Hits Gained (${WINDOW_DAYS}d)`, "warHits30d", model.leaders.topWarHits30d || [], formatInteger),
           buildLeaderboardSection(`Top Attacks Won Gained (${WINDOW_DAYS}d)`, "attacksWon30d", model.leaders.topAttacksWon30d || [], formatInteger),
           buildLeaderboardSection(`Top Respect Gained (${WINDOW_DAYS}d)`, "respect30d", model.leaders.topRespectGained30d || [], formatInteger)
         ])}
