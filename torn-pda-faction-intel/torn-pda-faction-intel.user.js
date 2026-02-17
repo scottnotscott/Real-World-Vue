@@ -18,6 +18,8 @@
   const STYLE_ID = "tpda-faction-intel-style";
   const COLLAPSED_STORAGE_KEY = "tpda_faction_intel_collapsed_v1";
   const GROUP_COLLAPSE_STORAGE_KEY = "tpda_faction_intel_group_collapsed_v2";
+  const MEMBER_CACHE_STORAGE_KEY = "tpda_faction_intel_member_cache_v4";
+  const FACTION_MODEL_CACHE_STORAGE_KEY = "tpda_faction_intel_faction_model_cache_v4";
   const API_BASE_URL = "https://api.torn.com/v2";
   const API_KEY = "###PDA-APIKEY###";
   const API_KEY_PLACEHOLDER = `${"#".repeat(3)}PDA-APIKEY${"#".repeat(3)}`;
@@ -79,7 +81,10 @@
     expandedTables: new Set(),
     collapsedGroups: new Set(),
     invalidStatNames: new Set(),
+    memberPersistTimer: null,
+    factionPersistTimer: null,
     factionCache: new Map(),
+    factionModelCache: new Map(),
     memberCache: new Map()
   };
 
@@ -351,9 +356,10 @@
       #tpda-faction-intel-spy-btn {
         display: inline-block;
         position: absolute;
-        right: 6px;
+        left: 50%;
+        right: auto;
         top: 50%;
-        transform: translateY(-50%);
+        transform: translate(-50%, -50%);
         border: 1px solid rgba(255, 255, 255, 0.25);
         border-radius: 4px;
         background: rgba(12, 22, 44, 0.9);
@@ -507,6 +513,104 @@
     if (!state.spyButton) return;
     state.spyButton.classList.toggle("is-open", !!state.spyOpen);
     state.spyButton.setAttribute("aria-pressed", state.spyOpen ? "true" : "false");
+  }
+
+  function saveMemberCacheToStorage() {
+    try {
+      const now = Date.now();
+      const entries = Array.from(state.memberCache.entries())
+        .filter(([, record]) => record && Number.isFinite(record.time) && (now - record.time) < MEMBER_CACHE_TTL_MS)
+        .slice(-MAX_MEMBER_CACHE_ENTRIES);
+      localStorage.setItem(
+        MEMBER_CACHE_STORAGE_KEY,
+        JSON.stringify({
+          version: MODEL_VERSION,
+          savedAt: now,
+          entries
+        })
+      );
+    } catch (err) {
+      // Ignore localStorage persistence failures.
+    }
+  }
+
+  function saveFactionModelCacheToStorage() {
+    try {
+      const now = Date.now();
+      const entries = Array.from(state.factionModelCache.entries())
+        .filter(([, record]) => record && Number.isFinite(record.time) && (now - record.time) < MEMBER_CACHE_TTL_MS)
+        .slice(-MAX_FACTION_CACHE_ENTRIES);
+      localStorage.setItem(
+        FACTION_MODEL_CACHE_STORAGE_KEY,
+        JSON.stringify({
+          version: MODEL_VERSION,
+          savedAt: now,
+          entries
+        })
+      );
+    } catch (err) {
+      // Ignore localStorage persistence failures.
+    }
+  }
+
+  function schedulePersistMemberCache() {
+    if (state.memberPersistTimer) return;
+    state.memberPersistTimer = setTimeout(() => {
+      state.memberPersistTimer = null;
+      saveMemberCacheToStorage();
+    }, 350);
+  }
+
+  function schedulePersistFactionModelCache() {
+    if (state.factionPersistTimer) return;
+    state.factionPersistTimer = setTimeout(() => {
+      state.factionPersistTimer = null;
+      saveFactionModelCacheToStorage();
+    }, 350);
+  }
+
+  function loadPersistentCaches() {
+    try {
+      const rawMember = localStorage.getItem(MEMBER_CACHE_STORAGE_KEY);
+      if (rawMember) {
+        const parsedMember = JSON.parse(rawMember);
+        if (parsedMember && parsedMember.version === MODEL_VERSION && Array.isArray(parsedMember.entries)) {
+          const now = Date.now();
+          for (const [memberId, record] of parsedMember.entries) {
+            if (!record || !Number.isFinite(record.time)) continue;
+            if ((now - record.time) >= MEMBER_CACHE_TTL_MS) continue;
+            state.memberCache.set(String(memberId), record);
+          }
+        }
+      }
+    } catch (err) {
+      // Ignore cache read errors.
+    }
+
+    try {
+      const rawFaction = localStorage.getItem(FACTION_MODEL_CACHE_STORAGE_KEY);
+      if (rawFaction) {
+        const parsedFaction = JSON.parse(rawFaction);
+        if (parsedFaction && parsedFaction.version === MODEL_VERSION && Array.isArray(parsedFaction.entries)) {
+          const now = Date.now();
+          for (const [cacheKey, record] of parsedFaction.entries) {
+            if (!record || !Number.isFinite(record.time)) continue;
+            if ((now - record.time) >= MEMBER_CACHE_TTL_MS) continue;
+            state.factionModelCache.set(String(cacheKey), record);
+          }
+        }
+      }
+    } catch (err) {
+      // Ignore cache read errors.
+    }
+  }
+
+  function getFreshFactionModel(cacheKey, maxAgeMs) {
+    const record = state.factionModelCache.get(String(cacheKey || ""));
+    if (!record || !record.model || !Number.isFinite(record.time)) return null;
+    if (record.version !== MODEL_VERSION) return null;
+    if ((Date.now() - record.time) >= Math.max(0, maxAgeMs || 0)) return null;
+    return record;
   }
 
   function ensureSpyButton() {
@@ -1349,6 +1453,7 @@
     };
     state.memberCache.set(memberId, cacheRecord);
     pruneTimedCache(state.memberCache, MAX_MEMBER_CACHE_ENTRIES);
+    schedulePersistMemberCache();
 
     return {
       member,
@@ -1378,6 +1483,11 @@
   }
 
   async function fetchFactionData(context, force, onProgress, shouldContinue) {
+    const freshFactionRecord = !force ? getFreshFactionModel(context.cacheKey, MEMBER_CACHE_TTL_MS) : null;
+    if (freshFactionRecord) {
+      return freshFactionRecord;
+    }
+
     const overview = await fetchFactionOverview(context, !!force);
     if (shouldContinue && !shouldContinue()) {
       throw new Error(CANCELLED_ERROR_TOKEN);
@@ -1437,7 +1547,11 @@
     emitProgress("");
     if (!queue.length) {
       const model = aggregateFactionIntel(basic, members, records);
-      return { time: Date.now(), model };
+      const record = { time: Date.now(), version: MODEL_VERSION, model };
+      state.factionModelCache.set(context.cacheKey, record);
+      pruneTimedCache(state.factionModelCache, MAX_FACTION_CACHE_ENTRIES);
+      schedulePersistFactionModelCache();
+      return record;
     }
 
     while (queue.length) {
@@ -1485,7 +1599,11 @@
     }
 
     const model = aggregateFactionIntel(basic, members, records);
-    return { time: Date.now(), model };
+    const record = { time: Date.now(), version: MODEL_VERSION, model };
+    state.factionModelCache.set(context.cacheKey, record);
+    pruneTimedCache(state.factionModelCache, MAX_FACTION_CACHE_ENTRIES);
+    schedulePersistFactionModelCache();
+    return record;
   }
 
   async function loadFaction(context, force) {
@@ -1495,6 +1613,23 @@
 
     if (!isApiKeyReady()) {
       renderError(contextCopy, "PDA API key is missing. Keep API_KEY as the PDA placeholder token and install this script through Torn PDA UserScripts.");
+      return;
+    }
+
+    const freshFactionRecord = !force ? getFreshFactionModel(contextCopy.cacheKey, MEMBER_CACHE_TTL_MS) : null;
+    if (freshFactionRecord && freshFactionRecord.model) {
+      contextCopy.name = freshFactionRecord.model && freshFactionRecord.model.faction && freshFactionRecord.model.faction.name
+        ? freshFactionRecord.model.faction.name
+        : contextCopy.name;
+      renderStats(contextCopy, freshFactionRecord.model, {
+        isScanning: false,
+        done: 0,
+        total: 0,
+        queueRemaining: 0,
+        failed: freshFactionRecord.model && freshFactionRecord.model.coverage ? freshFactionRecord.model.coverage.failedMembers : 0,
+        current: "",
+        cooldownMs: 0
+      });
       return;
     }
 
@@ -1648,6 +1783,7 @@
   }
 
   function boot() {
+    loadPersistentCaches();
     state.collapsed = readCollapsedPreference();
     state.collapsedGroups = readCollapsedGroupsPreference();
     tick();
