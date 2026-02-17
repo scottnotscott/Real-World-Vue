@@ -17,6 +17,7 @@
   const SCRIPT_ID = "tpda-faction-intel-panel";
   const STYLE_ID = "tpda-faction-intel-style";
   const COLLAPSED_STORAGE_KEY = "tpda_faction_intel_collapsed_v1";
+  const GROUP_COLLAPSE_STORAGE_KEY = "tpda_faction_intel_group_collapsed_v1";
   const API_BASE_URL = "https://api.torn.com/v2";
   const API_KEY = "###PDA-APIKEY###";
   const API_KEY_PLACEHOLDER = `${"#".repeat(3)}PDA-APIKEY${"#".repeat(3)}`;
@@ -25,11 +26,12 @@
   const POLL_INTERVAL_MS = 1200;
   const FACTION_CACHE_TTL_MS = 30 * 1000;
   const MEMBER_CACHE_TTL_MS = 20 * 60 * 1000;
-  const FORCE_REFRESH_CACHE_TTL_MS = 6 * 60 * 1000;
-  const MEMBER_SCAN_INTERVAL_MS = 1500;
-  const MEMBER_REQUEST_GAP_MS = 220;
-  const RATE_LIMIT_COOLDOWN_MS = 18000;
-  const MAX_RATE_LIMIT_RETRIES = 2;
+  const FORCE_REFRESH_CACHE_TTL_MS = 2 * 60 * 1000;
+  const MEMBER_SCAN_INTERVAL_MS = 70;
+  const MEMBER_REQUEST_GAP_MS = 60;
+  const RATE_LIMIT_COOLDOWN_MS = 12000;
+  const MAX_RATE_LIMIT_RETRIES = 4;
+  const MAX_MEMBER_RETRIES = 2;
   const MAX_FACTION_CACHE_ENTRIES = 12;
   const MAX_MEMBER_CACHE_ENTRIES = 650;
   const LEADERBOARD_LIMIT = 3;
@@ -61,6 +63,7 @@
     activeProgress: null,
     activeContext: null,
     expandedTables: new Set(),
+    collapsedGroups: new Set(),
     invalidStatNames: new Set(),
     factionCache: new Map(),
     memberCache: new Map()
@@ -81,6 +84,29 @@
       localStorage.setItem(COLLAPSED_STORAGE_KEY, value ? "1" : "0");
     } catch (err) {
       // Ignore localStorage failures; UI still works for current session.
+    }
+  }
+
+  function readCollapsedGroupsPreference() {
+    try {
+      const raw = localStorage.getItem(GROUP_COLLAPSE_STORAGE_KEY);
+      if (!raw) return new Set();
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return new Set();
+      return new Set(parsed.map((value) => String(value)));
+    } catch (err) {
+      return new Set();
+    }
+  }
+
+  function persistCollapsedGroupsPreference() {
+    try {
+      localStorage.setItem(
+        GROUP_COLLAPSE_STORAGE_KEY,
+        JSON.stringify(Array.from(state.collapsedGroups))
+      );
+    } catch (err) {
+      // Ignore localStorage failures.
     }
   }
 
@@ -286,6 +312,24 @@
         font-size: 10px;
         color: #a9a9a9;
       }
+      #${SCRIPT_ID} .tpda-group {
+        margin-top: 8px;
+      }
+      #${SCRIPT_ID} .tpda-group-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+        margin: 0 0 4px;
+      }
+      #${SCRIPT_ID} .tpda-group-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+      }
+      #${SCRIPT_ID} .tpda-group.is-collapsed .tpda-group-body {
+        display: none;
+      }
       @media (max-width: 420px) {
         #${SCRIPT_ID} {
           width: min(100%, calc(100vw - 4px));
@@ -464,6 +508,18 @@
     );
   }
 
+  function isRetryableMemberError(message) {
+    if (isRateLimitError(message)) return true;
+    const text = String(message || "").toLowerCase();
+    return (
+      text.includes("network") ||
+      text.includes("timeout") ||
+      text.includes("temporar") ||
+      text.includes("unavailable") ||
+      text.includes("http 5")
+    );
+  }
+
   async function apiGet(path, params) {
     const url = new URL(`${API_BASE_URL}${path}`);
     if (isApiKeyReady()) {
@@ -537,7 +593,8 @@
       return { stats: {}, invalidStats: [] };
     }
 
-    const chunks = chunkList(requested, 10);
+    const maxPerChunk = timestamp == null ? Math.max(1, requested.length) : 10;
+    const chunks = chunkList(requested, maxPerChunk);
     const merged = {};
     const invalidStats = [];
 
@@ -907,6 +964,22 @@
     return sectionTable(title, rowsHtml, actionHtml);
   }
 
+  function buildLeaderboardGroup(groupKey, title, sectionHtmlList) {
+    const collapsed = state.collapsedGroups.has(groupKey);
+    const sections = (Array.isArray(sectionHtmlList) ? sectionHtmlList : []).join("");
+    return `
+      <div class="tpda-group${collapsed ? " is-collapsed" : ""}">
+        <div class="tpda-group-head">
+          <div class="tpda-section-title">${escapeHtml(title)}</div>
+          <button class="tpda-btn tpda-mini" data-action="toggle-group" data-group="${escapeHtml(groupKey)}">${collapsed ? "Show" : "Hide"}</button>
+        </div>
+        <div class="tpda-group-body">
+          <div class="tpda-group-grid">${sections}</div>
+        </div>
+      </div>
+    `;
+  }
+
   function renderLoading(context, progress) {
     const root = ensureRoot();
     if (!root) return;
@@ -1057,18 +1130,26 @@
         ${sectionTable("Coverage", coverageRows)}
         ${sectionTable(`Last ${WINDOW_DAYS} Days`, monthlyRows)}
         ${sectionTable("Current / Lifetime", lifetimeRows)}
-        ${buildLeaderboardSection(`Top Time Played (${WINDOW_DAYS}d)`, "timePlayed30d", model.leaders.topTimePlayed30d || [], formatDuration)}
-        ${buildLeaderboardSection("Top Time Played (all-time)", "timePlayedAllTime", model.leaders.topTimePlayedAllTime || [], formatDuration)}
-        ${buildLeaderboardSection(`Top Xanax (${WINDOW_DAYS}d)`, "xanax30d", model.leaders.topXanax || [], formatInteger)}
-        ${buildLeaderboardSection(`Networth Change (${WINDOW_DAYS}d)`, "networthChange30d", model.leaders.topNetworthChange || [], formatSignedCompact)}
-        ${buildLeaderboardSection("Networth (all-time)", "networthAllTime", model.leaders.topNetworthAllTime || [], formatCompactUnsigned)}
-        ${buildLeaderboardSection(`Top Overdoses (${WINDOW_DAYS}d)`, "overdoses30d", model.leaders.topOverdoses30d || [], formatInteger)}
-        ${buildLeaderboardSection("Top Overdoses (all-time)", "overdosesAlltime", model.leaders.topOverdosesAllTime || [], formatInteger)}
-        ${buildLeaderboardSection(`Top RW Hits Gained (${WINDOW_DAYS}d)`, "warHits30d", model.leaders.topWarHits30d || [], formatInteger)}
-        ${buildLeaderboardSection(`Top Attacks Won Gained (${WINDOW_DAYS}d)`, "attacksWon30d", model.leaders.topAttacksWon30d || [], formatInteger)}
-        ${buildLeaderboardSection(`Top Respect Gained (${WINDOW_DAYS}d)`, "respect30d", model.leaders.topRespectGained30d || [], formatInteger)}
-        ${buildLeaderboardSection("Top Ranked War Hits (all-time)", "warHitsAllTime", model.leaders.topWarHits || [], formatInteger)}
-        ${buildLeaderboardSection("Top Respect for Faction (all-time)", "respectAllTime", model.leaders.topRespect || [], formatInteger)}
+        ${buildLeaderboardGroup("group-time-activity", "Time & Activity", [
+          buildLeaderboardSection(`Top Time Played (${WINDOW_DAYS}d)`, "timePlayed30d", model.leaders.topTimePlayed30d || [], formatDuration),
+          buildLeaderboardSection("Top Time Played (all-time)", "timePlayedAllTime", model.leaders.topTimePlayedAllTime || [], formatDuration),
+          buildLeaderboardSection(`Top Xanax (${WINDOW_DAYS}d)`, "xanax30d", model.leaders.topXanax || [], formatInteger),
+          buildLeaderboardSection(`Top Overdoses (${WINDOW_DAYS}d)`, "overdoses30d", model.leaders.topOverdoses30d || [], formatInteger),
+          buildLeaderboardSection("Top Overdoses (all-time)", "overdosesAlltime", model.leaders.topOverdosesAllTime || [], formatInteger)
+        ])}
+        ${buildLeaderboardGroup("group-finance", "Finance", [
+          buildLeaderboardSection(`Networth Change (${WINDOW_DAYS}d)`, "networthChange30d", model.leaders.topNetworthChange || [], formatSignedCompact),
+          buildLeaderboardSection("Networth (all-time)", "networthAllTime", model.leaders.topNetworthAllTime || [], formatCompactUnsigned)
+        ])}
+        ${buildLeaderboardGroup("group-combat-30d", `Combat (${WINDOW_DAYS}d gains)`, [
+          buildLeaderboardSection(`Top RW Hits Gained (${WINDOW_DAYS}d)`, "warHits30d", model.leaders.topWarHits30d || [], formatInteger),
+          buildLeaderboardSection(`Top Attacks Won Gained (${WINDOW_DAYS}d)`, "attacksWon30d", model.leaders.topAttacksWon30d || [], formatInteger),
+          buildLeaderboardSection(`Top Respect Gained (${WINDOW_DAYS}d)`, "respect30d", model.leaders.topRespectGained30d || [], formatInteger)
+        ])}
+        ${buildLeaderboardGroup("group-combat-alltime", "Combat (all-time)", [
+          buildLeaderboardSection("Top Ranked War Hits (all-time)", "warHitsAllTime", model.leaders.topWarHits || [], formatInteger),
+          buildLeaderboardSection("Top Respect for Faction (all-time)", "respectAllTime", model.leaders.topRespect || [], formatInteger)
+        ])}
       </div>
       <div class="tpda-footnote">This panel scans faction members, fetches their public personal stats, and aggregates totals for faction intel. Gold values are ${WINDOW_DAYS}-day activity deltas.</div>
     `;
@@ -1194,8 +1275,9 @@
       }
     }
 
+    const targetTotal = queue.length;
     let done = 0;
-    let failed = records.filter((row) => row && row.error).length;
+    let failed = 0;
     let cooldownMs = 0;
 
     const emitProgress = (currentMemberName) => {
@@ -1203,12 +1285,12 @@
       const model = aggregateFactionIntel(basic, members, records);
       onProgress({
         done,
-        total: queue.length,
-        queueRemaining: Math.max(0, queue.length - done),
+        total: targetTotal,
+        queueRemaining: Math.max(0, targetTotal - done),
         failed,
         current: currentMemberName || "",
         cooldownMs,
-        isScanning: done < queue.length,
+        isScanning: done < targetTotal,
         model
       });
     };
@@ -1219,12 +1301,12 @@
       return { time: Date.now(), model };
     }
 
-    for (let idx = 0; idx < queue.length; idx += 1) {
+    while (queue.length) {
       if (shouldContinue && !shouldContinue()) {
         throw new Error(CANCELLED_ERROR_TOKEN);
       }
 
-      const item = queue[idx];
+      const item = queue.shift();
       const currentName = formatMemberName(item.member);
       cooldownMs = 0;
 
@@ -1233,12 +1315,17 @@
         records[item.index] = row;
       } catch (err) {
         const message = err && err.message ? err.message : "Failed to fetch member data.";
-        if (isRateLimitError(message) && item.retries < MAX_RATE_LIMIT_RETRIES) {
+        const retryLimit = isRateLimitError(message) ? MAX_RATE_LIMIT_RETRIES : MAX_MEMBER_RETRIES;
+        if (item.retries < retryLimit && isRetryableMemberError(message)) {
           item.retries += 1;
-          cooldownMs = RATE_LIMIT_COOLDOWN_MS * item.retries;
-          emitProgress(currentName);
-          await sleep(cooldownMs);
-          idx -= 1;
+          if (isRateLimitError(message)) {
+            cooldownMs = RATE_LIMIT_COOLDOWN_MS * item.retries;
+            emitProgress(currentName);
+            await sleep(cooldownMs);
+          } else {
+            await sleep(350 * item.retries);
+          }
+          queue.push(item);
           continue;
         }
 
@@ -1253,7 +1340,7 @@
       done += 1;
       emitProgress(currentName);
 
-      if (idx < queue.length - 1) {
+      if (queue.length) {
         await sleep(MEMBER_SCAN_INTERVAL_MS);
       }
     }
@@ -1332,6 +1419,22 @@
       return;
     }
 
+    const groupToggleButton = event.target.closest("button[data-action='toggle-group']");
+    if (groupToggleButton) {
+      const groupKey = groupToggleButton.getAttribute("data-group");
+      if (!groupKey) return;
+      if (state.collapsedGroups.has(groupKey)) {
+        state.collapsedGroups.delete(groupKey);
+      } else {
+        state.collapsedGroups.add(groupKey);
+      }
+      persistCollapsedGroupsPreference();
+      if (state.activeContext && state.activeModel) {
+        renderStats(state.activeContext, state.activeModel, state.activeProgress);
+      }
+      return;
+    }
+
     const toggleButton = event.target.closest("button[data-action='toggle']");
     if (!toggleButton) return;
     state.collapsed = !state.collapsed;
@@ -1365,6 +1468,7 @@
 
   function boot() {
     state.collapsed = readCollapsedPreference();
+    state.collapsedGroups = readCollapsedGroupsPreference();
     tick();
     setInterval(tick, POLL_INTERVAL_MS);
   }
