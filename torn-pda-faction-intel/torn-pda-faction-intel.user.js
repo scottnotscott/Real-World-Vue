@@ -17,16 +17,17 @@
   const SCRIPT_ID = "tpda-faction-intel-panel";
   const STYLE_ID = "tpda-faction-intel-style";
   const COLLAPSED_STORAGE_KEY = "tpda_faction_intel_collapsed_v1";
-  const GROUP_COLLAPSE_STORAGE_KEY = "tpda_faction_intel_group_collapsed_v1";
+  const GROUP_COLLAPSE_STORAGE_KEY = "tpda_faction_intel_group_collapsed_v2";
   const API_BASE_URL = "https://api.torn.com/v2";
   const API_KEY = "###PDA-APIKEY###";
   const API_KEY_PLACEHOLDER = `${"#".repeat(3)}PDA-APIKEY${"#".repeat(3)}`;
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
   const WINDOW_DAYS = 30;
   const WINDOW_SECONDS = WINDOW_DAYS * 86400;
   const POLL_INTERVAL_MS = 1200;
-  const FACTION_CACHE_TTL_MS = 30 * 1000;
-  const MEMBER_CACHE_TTL_MS = 20 * 60 * 1000;
-  const FORCE_REFRESH_CACHE_TTL_MS = 2 * 60 * 1000;
+  const FACTION_CACHE_TTL_MS = ONE_DAY_MS;
+  const MEMBER_CACHE_TTL_MS = ONE_DAY_MS;
+  const FORCE_REFRESH_CACHE_TTL_MS = 60 * 60 * 1000;
   const MEMBER_SCAN_INTERVAL_MS = 70;
   const MEMBER_REQUEST_GAP_MS = 60;
   const RATE_LIMIT_COOLDOWN_MS = 12000;
@@ -35,7 +36,18 @@
   const MAX_FACTION_CACHE_ENTRIES = 12;
   const MAX_MEMBER_CACHE_ENTRIES = 650;
   const LEADERBOARD_LIMIT = 3;
+  const MODEL_VERSION = 4;
   const CANCELLED_ERROR_TOKEN = "__tpda_cancelled__";
+
+  const DEFAULT_COLLAPSED_SECTION_KEYS = [
+    "section-coverage",
+    "section-last30",
+    "section-lifetime",
+    "group-time-activity",
+    "group-finance",
+    "group-combat-30d",
+    "group-combat-alltime"
+  ];
 
   const MONTHLY_STAT_NAMES = [
     "timeplayed",
@@ -58,6 +70,8 @@
     context: null,
     requestId: 0,
     root: null,
+    spyButton: null,
+    spyOpen: false,
     collapsed: true,
     activeModel: null,
     activeProgress: null,
@@ -87,15 +101,19 @@
     }
   }
 
+  function defaultCollapsedSections() {
+    return new Set(DEFAULT_COLLAPSED_SECTION_KEYS);
+  }
+
   function readCollapsedGroupsPreference() {
     try {
       const raw = localStorage.getItem(GROUP_COLLAPSE_STORAGE_KEY);
-      if (!raw) return new Set();
+      if (!raw) return defaultCollapsedSections();
       const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return new Set();
+      if (!Array.isArray(parsed)) return defaultCollapsedSections();
       return new Set(parsed.map((value) => String(value)));
     } catch (err) {
-      return new Set();
+      return defaultCollapsedSections();
     }
   }
 
@@ -330,6 +348,28 @@
       #${SCRIPT_ID} .tpda-group.is-collapsed .tpda-group-body {
         display: none;
       }
+      #tpda-faction-intel-spy-btn {
+        display: inline-block;
+        position: absolute;
+        right: 6px;
+        top: 50%;
+        transform: translateY(-50%);
+        border: 1px solid rgba(255, 255, 255, 0.25);
+        border-radius: 4px;
+        background: rgba(12, 22, 44, 0.9);
+        color: #d7e7ff;
+        font-size: 10px;
+        padding: 2px 7px;
+        line-height: 1.2;
+        z-index: 8;
+      }
+      #tpda-faction-intel-spy-btn.is-open {
+        background: rgba(45, 74, 126, 0.95);
+        border-color: rgba(140, 180, 255, 0.7);
+      }
+      .tpda-spy-anchor {
+        position: relative !important;
+      }
       @media (max-width: 420px) {
         #${SCRIPT_ID} {
           width: min(100%, calc(100vw - 4px));
@@ -424,6 +464,76 @@
       factionId: null,
       isSelf: true
     };
+  }
+
+  function isElementVisible(element) {
+    if (!element || !element.getBoundingClientRect) return false;
+    const rect = element.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return false;
+    if (rect.bottom < 0 || rect.top > window.innerHeight) return false;
+    return true;
+  }
+
+  function findSpyButtonMountTarget() {
+    const targetedSelectors = [
+      "#mainContainer .faction-info-wrap .title-black",
+      "#mainContainer .faction-info .title-black",
+      "#mainContainer .faction-wrap .title-black",
+      "#mainContainer .faction .title-black",
+      "#mainContainer .title-black"
+    ];
+    for (const selector of targetedSelectors) {
+      const candidates = Array.from(document.querySelectorAll(selector));
+      for (const candidate of candidates) {
+        if (!isElementVisible(candidate)) continue;
+        const text = String(candidate.textContent || "").trim();
+        if (!text) continue;
+        return candidate;
+      }
+    }
+
+    const headingSelectors = "#mainContainer h2, #mainContainer h3, #mainContainer h4, #mainContainer h5, #mainContainer .title";
+    const headingCandidates = Array.from(document.querySelectorAll(headingSelectors));
+    for (const candidate of headingCandidates) {
+      if (!isElementVisible(candidate)) continue;
+      const text = String(candidate.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+      if (text === "faction") return candidate;
+    }
+
+    return findMountTarget();
+  }
+
+  function updateSpyButtonState() {
+    if (!state.spyButton) return;
+    state.spyButton.classList.toggle("is-open", !!state.spyOpen);
+    state.spyButton.setAttribute("aria-pressed", state.spyOpen ? "true" : "false");
+  }
+
+  function ensureSpyButton() {
+    ensureStyle();
+    if (!state.spyButton) {
+      const button = document.createElement("button");
+      button.id = "tpda-faction-intel-spy-btn";
+      button.type = "button";
+      button.textContent = "[ spy ]";
+      button.addEventListener("click", handleSpyButtonClick);
+      state.spyButton = button;
+    }
+
+    const target = findSpyButtonMountTarget();
+    if (!target) return null;
+    target.classList.add("tpda-spy-anchor");
+    if (state.spyButton.parentNode !== target) {
+      target.appendChild(state.spyButton);
+    }
+    updateSpyButtonState();
+    return state.spyButton;
+  }
+
+  function removeSpyButton() {
+    if (state.spyButton && state.spyButton.parentNode) {
+      state.spyButton.parentNode.removeChild(state.spyButton);
+    }
   }
 
   function findMountTarget() {
@@ -964,6 +1074,22 @@
     return sectionTable(title, rowsHtml, actionHtml);
   }
 
+  function buildCollapsibleTableSection(sectionKey, title, rowsHtml) {
+    const collapsed = state.collapsedGroups.has(sectionKey);
+    const actionHtml = `<button class="tpda-btn tpda-mini" data-action="toggle-group" data-group="${escapeHtml(sectionKey)}">${collapsed ? "Show" : "Hide"}</button>`;
+    return `
+      <div class="tpda-group${collapsed ? " is-collapsed" : ""}">
+        <div class="tpda-group-head">
+          <div class="tpda-section-title">${escapeHtml(title)}</div>
+          ${actionHtml}
+        </div>
+        <div class="tpda-group-body">
+          <div class="tpda-table">${rowsHtml}</div>
+        </div>
+      </div>
+    `;
+  }
+
   function buildLeaderboardGroup(groupKey, title, sectionHtmlList) {
     const collapsed = state.collapsedGroups.has(groupKey);
     const sections = (Array.isArray(sectionHtmlList) ? sectionHtmlList : []).join("");
@@ -1127,9 +1253,9 @@
         <div class="tpda-expand-hint">Tap Expand for full faction intel.</div>
       </div>
       <div class="tpda-expanded">
-        ${sectionTable("Coverage", coverageRows)}
-        ${sectionTable(`Last ${WINDOW_DAYS} Days`, monthlyRows)}
-        ${sectionTable("Current / Lifetime", lifetimeRows)}
+        ${buildCollapsibleTableSection("section-coverage", "Coverage", coverageRows)}
+        ${buildCollapsibleTableSection("section-last30", `Last ${WINDOW_DAYS} Days`, monthlyRows)}
+        ${buildCollapsibleTableSection("section-lifetime", "Current / Lifetime", lifetimeRows)}
         ${buildLeaderboardGroup("group-time-activity", "Time & Activity", [
           buildLeaderboardSection(`Top Time Played (${WINDOW_DAYS}d)`, "timePlayed30d", model.leaders.topTimePlayed30d || [], formatDuration),
           buildLeaderboardSection("Top Time Played (all-time)", "timePlayedAllTime", model.leaders.topTimePlayedAllTime || [], formatDuration),
@@ -1165,6 +1291,17 @@
     }
   }
 
+  function isMemberCacheUsable(cacheEntry) {
+    if (!cacheEntry || !cacheEntry.model) return false;
+    if (cacheEntry.version !== MODEL_VERSION) return false;
+    const monthly = cacheEntry.model.monthly || {};
+    const lifetime = cacheEntry.model.lifetime || {};
+    if (!Object.prototype.hasOwnProperty.call(monthly, "attacksWon30d")) return false;
+    if (!Object.prototype.hasOwnProperty.call(monthly, "respectGained30d")) return false;
+    if (!Object.prototype.hasOwnProperty.call(lifetime, "timePlayedAllTime")) return false;
+    return true;
+  }
+
   function getFactionApiPath(context, endpoint) {
     if (context && context.factionId) {
       return `/faction/${context.factionId}/${endpoint}`;
@@ -1187,7 +1324,7 @@
     }
 
     const cached = state.memberCache.get(memberId);
-    if (!force && cached && (Date.now() - cached.time) < MEMBER_CACHE_TTL_MS) {
+    if (!force && isMemberCacheUsable(cached) && (Date.now() - cached.time) < MEMBER_CACHE_TTL_MS) {
       return {
         member,
         model: cached.model,
@@ -1206,6 +1343,7 @@
     ]));
     const cacheRecord = {
       time: Date.now(),
+      version: MODEL_VERSION,
       model,
       invalidStats
     };
@@ -1259,8 +1397,9 @@
       const memberId = member && member.id != null ? String(member.id) : "";
       const cached = memberId ? state.memberCache.get(memberId) : null;
       const age = cached ? (now - cached.time) : Number.POSITIVE_INFINITY;
+      const isUsable = isMemberCacheUsable(cached);
 
-      if (cached && cached.model) {
+      if (isUsable) {
         records[i] = {
           member,
           model: cached.model,
@@ -1270,7 +1409,7 @@
         records[i] = { member };
       }
 
-      if (!cached || age >= refreshTtl) {
+      if (!isUsable || age >= refreshTtl) {
         queue.push({ member, index: i, retries: 0 });
       }
     }
@@ -1396,6 +1535,30 @@
     }
   }
 
+  function handleSpyButtonClick(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!state.context) return;
+
+    if (!state.spyOpen) {
+      state.spyOpen = true;
+      updateSpyButtonState();
+      ensureRoot();
+
+      if (state.activeContext && state.activeModel && state.activeContext.cacheKey === state.context.cacheKey) {
+        renderStats(state.context, state.activeModel, state.activeProgress);
+        return;
+      }
+      loadFaction(state.context, false);
+      return;
+    }
+
+    state.spyOpen = false;
+    state.requestId += 1;
+    removeRoot();
+    updateSpyButtonState();
+  }
+
   function handleRootClick(event) {
     const refreshButton = event.target.closest("button[data-action='refresh']");
     if (refreshButton) {
@@ -1447,23 +1610,41 @@
     if (!context) {
       state.requestId += 1;
       state.context = null;
+      state.spyOpen = false;
+      state.activeModel = null;
+      state.activeProgress = null;
+      state.activeContext = null;
       removeRoot();
+      removeSpyButton();
       return;
     }
 
-    ensureRoot();
+    ensureSpyButton();
     const prev = state.context;
     const changed = !prev || prev.cacheKey !== context.cacheKey;
     state.context = context;
 
     if (changed) {
-      loadFaction(context, false);
+      state.requestId += 1;
+      state.spyOpen = false;
+      state.activeModel = null;
+      state.activeProgress = null;
+      state.activeContext = null;
+      removeRoot();
+      updateSpyButtonState();
       return;
     }
 
-    if (state.root && !document.contains(state.root)) {
+    if (!state.spyOpen) {
+      removeRoot();
+      updateSpyButtonState();
+      return;
+    }
+
+    if (!state.root || !document.contains(state.root)) {
       ensureRoot();
     }
+    updateSpyButtonState();
   }
 
   function boot() {
