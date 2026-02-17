@@ -615,9 +615,12 @@
     return parts.join(" ");
   }
 
-  function formatCurrencyCompact(value) {
+  function formatCompact(value, options) {
     if (!Number.isFinite(value)) return "--";
-    const sign = value < 0 ? "-" : "";
+    const signed = !!(options && options.signed);
+    const currency = !!(options && options.currency);
+    const sign = value < 0 ? "-" : (signed && value > 0 ? "+" : "");
+    const prefix = currency ? "$" : "";
     const absolute = Math.abs(value);
     const units = [
       { amount: 1e12, suffix: "t" },
@@ -627,10 +630,22 @@
     ];
     for (const unit of units) {
       if (absolute >= unit.amount) {
-        return `${sign}$${decimal(absolute / unit.amount, 2)}${unit.suffix}`;
+        return `${sign}${prefix}${decimal(absolute / unit.amount, 2)}${unit.suffix}`;
       }
     }
-    return `${sign}$${formatInteger(absolute)}`;
+    return `${sign}${prefix}${formatInteger(absolute)}`;
+  }
+
+  function formatCurrencyCompact(value) {
+    return formatCompact(value, { signed: false, currency: true });
+  }
+
+  function formatSignedCompact(value) {
+    return formatCompact(value, { signed: true, currency: false });
+  }
+
+  function formatCompactUnsigned(value) {
+    return formatCompact(value, { signed: false, currency: false });
   }
 
   function formatMemberName(member) {
@@ -655,15 +670,6 @@
       .map((record) => ({ record, value: toNumber(getter(record)) }))
       .filter((row) => row.value != null)
       .sort((a, b) => b.value - a.value);
-    if (limit == null) return sorted;
-    return sorted.slice(0, limit);
-  }
-
-  function byLowest(records, getter, limit) {
-    const sorted = records
-      .map((record) => ({ record, value: toNumber(getter(record)) }))
-      .filter((row) => row.value != null)
-      .sort((a, b) => a.value - b.value);
     if (limit == null) return sorted;
     return sorted.slice(0, limit);
   }
@@ -782,9 +788,8 @@
     }
 
     const topXanax = byHighest(valid, (row) => row.model.monthly.xanaxTaken);
-    const topNetworthGain = byHighest(valid, (row) => row.model.monthly.networthGain);
-    const lowestNetworthGain = byLowest(valid, (row) => row.model.monthly.networthGain);
-    const networthLosers = lowestNetworthGain.filter((row) => row.value < 0);
+    const topNetworthChange = byHighest(valid, (row) => row.model.monthly.networthGain);
+    const topNetworthAllTime = byHighest(valid, (row) => row.model.lifetime.totalNetworth);
     const topWarHits = byHighest(valid, (row) => row.model.lifetime.rankedWarHits);
     const topRespect = byHighest(valid, (row) => row.model.lifetime.totalRespect);
     const topOverdoses30d = byHighest(valid, (row) => row.model.monthly.overdoses);
@@ -834,8 +839,8 @@
       },
       leaders: {
         topXanax,
-        topNetworthGain,
-        networthLosers: networthLosers.length ? networthLosers : lowestNetworthGain,
+        topNetworthChange,
+        topNetworthAllTime,
         topWarHits,
         topRespect,
         topOverdoses30d,
@@ -990,7 +995,7 @@
       statRow("Members Scanned", `${formatInteger(coverage.scannedMembers)} / ${formatInteger(coverage.totalMembers)}`, `${formatInteger(coverage.failedMembers)} failed`, false, false),
       statRow(`30-Day Time Played`, formatDuration(totals.timePlayed), null, true, false),
       statRow(`30-Day Xanax Taken`, formatInteger(totals.xanaxTaken), null, true, false),
-      statRow(`30-Day Networth Gain`, formatCurrencyCompact(totals.networthGain), null, true, false),
+      statRow(`30-Day Networth Change`, formatSignedCompact(totals.networthGain), null, true, false),
       statRow("Ranked War Hits", formatInteger(totals.rankedWarHits), null, false, false),
       statRow("Total Respect", formatInteger(totals.totalRespect), null, false, false),
       statRow("Faction Respect", formatInteger(factionRespect), null, false, false)
@@ -1010,7 +1015,7 @@
       statRow("Cans Used", formatInteger(totals.cansUsed), `Avg ${decimal(averages.cansPerMemberPerDay, 2)} / member / day`, true, false),
       statRow("Refills", `${formatInteger(totals.refillEnergy)} E + ${formatInteger(totals.refillNerve)} N`, null, true, false),
       statRow("Misc Boosters", formatInteger(totals.miscBoosters), null, true, false),
-      statRow("Networth Gain", formatCurrencyCompact(totals.networthGain), `Avg/member ${formatCurrencyCompact(averages.networthGainPerMember)}`, true, false),
+      statRow("Networth Change", formatSignedCompact(totals.networthGain), `Avg/member ${formatSignedCompact(averages.networthGainPerMember)}`, true, false),
       statRow("Stat Enhancers", formatInteger(totals.statEnhancers30d), null, true, false),
       statRow("RW Hits Gained", formatInteger(totals.rankedWarHits30d), null, true, false),
       statRow("Attacks Won Gained", formatInteger(totals.attacksWon30d), null, true, false),
@@ -1048,8 +1053,8 @@
         ${sectionTable(`Last ${WINDOW_DAYS} Days`, monthlyRows)}
         ${sectionTable("Current / Lifetime", lifetimeRows)}
         ${buildLeaderboardSection(`Top Xanax (${WINDOW_DAYS}d)`, "xanax30d", model.leaders.topXanax || [], formatInteger)}
-        ${buildLeaderboardSection(`Top Networth Gain (${WINDOW_DAYS}d)`, "networthGain30d", model.leaders.topNetworthGain || [], formatCurrencyCompact)}
-        ${buildLeaderboardSection(`Networth Losers (${WINDOW_DAYS}d)`, "networthLosers30d", model.leaders.networthLosers || [], formatCurrencyCompact)}
+        ${buildLeaderboardSection(`Networth Change (${WINDOW_DAYS}d)`, "networthChange30d", model.leaders.topNetworthChange || [], formatSignedCompact)}
+        ${buildLeaderboardSection("Networth (all-time)", "networthAllTime", model.leaders.topNetworthAllTime || [], formatCompactUnsigned)}
         ${buildLeaderboardSection(`Top Overdoses (${WINDOW_DAYS}d)`, "overdoses30d", model.leaders.topOverdoses30d || [], formatInteger)}
         ${buildLeaderboardSection("Top Overdoses (all-time)", "overdosesAlltime", model.leaders.topOverdosesAllTime || [], formatInteger)}
         ${buildLeaderboardSection(`Top RW Hits Gained (${WINDOW_DAYS}d)`, "warHits30d", model.leaders.topWarHits30d || [], formatInteger)}
