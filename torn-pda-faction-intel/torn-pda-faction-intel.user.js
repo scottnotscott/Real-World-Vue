@@ -11,8 +11,12 @@
 (function () {
   "use strict";
 
+  if (window.__tpdaFactionIntelLoaded) return;
+  window.__tpdaFactionIntelLoaded = true;
+
   const SCRIPT_ID = "tpda-faction-intel-panel";
   const STYLE_ID = "tpda-faction-intel-style";
+  const COLLAPSED_STORAGE_KEY = "tpda_faction_intel_collapsed_v1";
   const API_BASE_URL = "https://api.torn.com/v2";
   const API_KEY = "###PDA-APIKEY###";
   const API_KEY_PLACEHOLDER = `${"#".repeat(3)}PDA-APIKEY${"#".repeat(3)}`;
@@ -24,6 +28,7 @@
   const MAX_FACTION_CACHE_ENTRIES = 12;
   const MAX_MEMBER_CACHE_ENTRIES = 650;
   const MEMBER_CONCURRENCY = 2;
+  const LEADERBOARD_LIMIT = 3;
   const CANCELLED_ERROR_TOKEN = "__tpda_cancelled__";
 
   const MONTHLY_STAT_NAMES = [
@@ -42,69 +47,113 @@
     ...MONTHLY_STAT_NAMES,
     "rankedwarhits",
     "attackswon",
-    "respectforfaction",
-    "totalworkingstats"
+    "respectforfaction"
   ];
 
   const state = {
     context: null,
     requestId: 0,
     root: null,
+    collapsed: true,
     factionCache: new Map(),
     memberCache: new Map()
   };
 
+  function readCollapsedPreference() {
+    try {
+      const raw = localStorage.getItem(COLLAPSED_STORAGE_KEY);
+      if (raw == null) return true;
+      return raw !== "0";
+    } catch (err) {
+      return true;
+    }
+  }
+
+  function persistCollapsedPreference(value) {
+    try {
+      localStorage.setItem(COLLAPSED_STORAGE_KEY, value ? "1" : "0");
+    } catch (err) {
+      // Ignore localStorage failures; UI still works for current session.
+    }
+  }
+
+  function applyCollapsedUiState() {
+    if (!state.root) return;
+    state.root.classList.toggle("tpda-collapsed", !!state.collapsed);
+    const toggleButton = state.root.querySelector("button[data-action='toggle']");
+    if (toggleButton) {
+      toggleButton.textContent = state.collapsed ? "Expand" : "Collapse";
+    }
+  }
+
   function ensureStyle() {
-    if (document.getElementById(STYLE_ID)) return;
+    const existingStyles = Array.from(document.querySelectorAll(`#${STYLE_ID}`));
+    if (existingStyles.length) {
+      for (let i = 1; i < existingStyles.length; i += 1) {
+        existingStyles[i].parentNode && existingStyles[i].parentNode.removeChild(existingStyles[i]);
+      }
+      return;
+    }
+
     const style = document.createElement("style");
     style.id = STYLE_ID;
     style.textContent = `
       #${SCRIPT_ID} {
         box-sizing: border-box;
-        width: min(980px, calc(100vw - 16px));
-        margin: 8px auto;
-        padding: 10px;
+        width: min(430px, calc(100vw - 8px));
+        margin: 4px auto;
+        padding: 6px;
         border-radius: 8px;
         border: 1px solid rgba(255, 255, 255, 0.1);
-        background: rgba(20, 20, 24, 0.92);
+        background: rgba(15, 15, 20, 0.96);
         color: #e5e5e5;
         font-family: Arial, sans-serif;
-        line-height: 1.24;
+        line-height: 1.2;
+        max-height: calc(100vh - 78px);
+        overflow-y: auto;
       }
       #${SCRIPT_ID} * {
         box-sizing: border-box;
       }
       #${SCRIPT_ID} .tpda-head {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         justify-content: space-between;
-        gap: 8px;
-        margin-bottom: 8px;
+        gap: 6px;
+        margin-bottom: 6px;
       }
       #${SCRIPT_ID} .tpda-title {
-        font-size: 16px;
+        font-size: 14px;
         font-weight: 700;
       }
       #${SCRIPT_ID} .tpda-subtitle {
+        margin-top: 1px;
         font-size: 11px;
         color: #bdbdbd;
+      }
+      #${SCRIPT_ID} .tpda-actions {
+        display: flex;
+        align-items: center;
+        gap: 4px;
       }
       #${SCRIPT_ID} .tpda-btn {
         border: 1px solid #4b4b4b;
         background: #2a2a2a;
         color: #f0f0f0;
         border-radius: 5px;
-        padding: 4px 8px;
-        font-size: 12px;
+        padding: 3px 7px;
+        font-size: 11px;
+        line-height: 1.1;
+        min-height: 23px;
       }
       #${SCRIPT_ID} .tpda-btn:active {
         transform: translateY(1px);
       }
       #${SCRIPT_ID} .tpda-status {
-        padding: 6px 8px;
+        padding: 5px 7px;
         border-radius: 6px;
-        margin-bottom: 8px;
-        font-size: 12px;
+        margin-bottom: 6px;
+        font-size: 11px;
       }
       #${SCRIPT_ID} .tpda-status.is-error {
         background: rgba(155, 48, 48, 0.2);
@@ -116,50 +165,66 @@
         border: 1px solid rgba(99, 145, 225, 0.45);
         color: #d7e7ff;
       }
+      #${SCRIPT_ID} .tpda-section {
+        margin-top: 7px;
+      }
       #${SCRIPT_ID} .tpda-section-title {
-        margin: 10px 0 6px;
-        font-size: 12px;
+        margin: 0 0 4px;
+        font-size: 11px;
         font-weight: 700;
-        color: #d9d9d9;
+        color: #d7d7d7;
         text-transform: uppercase;
         letter-spacing: 0.03em;
       }
-      #${SCRIPT_ID} .tpda-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 6px;
-      }
-      #${SCRIPT_ID} .tpda-card {
+      #${SCRIPT_ID} .tpda-table {
         border-radius: 6px;
         background: rgba(255, 255, 255, 0.04);
         border: 1px solid rgba(255, 255, 255, 0.06);
-        padding: 7px 8px;
-        min-height: 62px;
+        overflow: hidden;
       }
-      #${SCRIPT_ID} .tpda-label {
-        color: #bfbfbf;
+      #${SCRIPT_ID} .tpda-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 7px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      }
+      #${SCRIPT_ID} .tpda-row:last-child {
+        border-bottom: none;
+      }
+      #${SCRIPT_ID} .tpda-row-left {
+        min-width: 0;
+      }
+      #${SCRIPT_ID} .tpda-row-label {
+        color: #cdcdcd;
         font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
-      #${SCRIPT_ID} .tpda-value {
-        margin-top: 2px;
-        font-size: 17px;
+      #${SCRIPT_ID} .tpda-row-meta {
+        margin-top: 1px;
+        font-size: 10px;
+        color: #9f9f9f;
+      }
+      #${SCRIPT_ID} .tpda-row-value {
+        font-size: 14px;
         font-weight: 700;
+        color: #f2f2f2;
+        text-align: right;
+        flex: 0 0 auto;
       }
-      #${SCRIPT_ID} .tpda-value.tpda-gold {
+      #${SCRIPT_ID} .tpda-row-value.tpda-gold {
         color: #d7a544;
-      }
-      #${SCRIPT_ID} .tpda-meta {
-        margin-top: 2px;
-        font-size: 11px;
-        color: #bfbfbf;
       }
       #${SCRIPT_ID} .tpda-progress-wrap {
         width: 100%;
-        height: 8px;
+        height: 6px;
         border-radius: 999px;
         background: rgba(255, 255, 255, 0.08);
         overflow: hidden;
-        margin-top: 6px;
+        margin-top: 4px;
       }
       #${SCRIPT_ID} .tpda-progress-fill {
         height: 100%;
@@ -167,47 +232,34 @@
         border-radius: 999px;
         background: linear-gradient(90deg, #4f8be0, #79a7f2);
       }
-      #${SCRIPT_ID} .tpda-list {
-        border-radius: 6px;
-        background: rgba(255, 255, 255, 0.04);
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        overflow: hidden;
-      }
-      #${SCRIPT_ID} .tpda-list-row {
-        display: flex;
-        justify-content: space-between;
-        gap: 8px;
-        padding: 6px 8px;
-        font-size: 12px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-      }
-      #${SCRIPT_ID} .tpda-list-row:last-child {
-        border-bottom: none;
-      }
-      #${SCRIPT_ID} .tpda-list-name {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        color: #dfdfdf;
-      }
-      #${SCRIPT_ID} .tpda-list-value {
-        color: #f2f2f2;
-        font-weight: 700;
-        flex: 0 0 auto;
+      #${SCRIPT_ID} .tpda-row-label.is-leader {
+        max-width: 250px;
       }
       #${SCRIPT_ID} .tpda-footnote {
-        margin-top: 10px;
-        font-size: 11px;
+        margin-top: 7px;
+        font-size: 10px;
         color: #adadad;
       }
-      @media (max-width: 520px) {
+      #${SCRIPT_ID}.tpda-collapsed .tpda-expanded {
+        display: none;
+      }
+      #${SCRIPT_ID}:not(.tpda-collapsed) .tpda-compact {
+        display: none;
+      }
+      #${SCRIPT_ID} .tpda-expand-hint {
+        margin-top: 6px;
+        font-size: 10px;
+        color: #a9a9a9;
+      }
+      @media (max-width: 420px) {
         #${SCRIPT_ID} {
-          width: calc(100vw - 10px);
-          margin: 6px auto;
-          padding: 8px;
+          width: calc(100vw - 6px);
+          margin: 3px auto;
+          padding: 5px;
+          max-height: calc(100vh - 70px);
         }
-        #${SCRIPT_ID} .tpda-grid {
-          grid-template-columns: 1fr;
+        #${SCRIPT_ID} .tpda-row-label.is-leader {
+          max-width: 190px;
         }
       }
     `;
@@ -303,6 +355,12 @@
 
   function ensureRoot() {
     ensureStyle();
+    const existingRoots = Array.from(document.querySelectorAll(`#${SCRIPT_ID}`));
+    for (const node of existingRoots) {
+      if (state.root && node === state.root) continue;
+      node.parentNode && node.parentNode.removeChild(node);
+    }
+
     if (!state.root) {
       const root = document.createElement("section");
       root.id = SCRIPT_ID;
@@ -314,6 +372,7 @@
     if (state.root.parentNode !== target) {
       target.prepend(state.root);
     }
+    applyCollapsedUiState();
     return state.root;
   }
 
@@ -632,10 +691,10 @@
       includeAccumulator(aDaysInFaction, row.model.lifetime.daysInFaction);
     }
 
-    const topXanax = byHighest(valid, (row) => row.model.monthly.xanaxTaken, 5);
-    const topNetworthGain = byHighest(valid, (row) => row.model.monthly.networthGain, 5);
-    const topWarHits = byHighest(valid, (row) => row.model.lifetime.rankedWarHits, 5);
-    const topRespect = byHighest(valid, (row) => row.model.lifetime.totalRespect, 5);
+    const topXanax = byHighest(valid, (row) => row.model.monthly.xanaxTaken, LEADERBOARD_LIMIT);
+    const topNetworthGain = byHighest(valid, (row) => row.model.monthly.networthGain, LEADERBOARD_LIMIT);
+    const topWarHits = byHighest(valid, (row) => row.model.lifetime.rankedWarHits, LEADERBOARD_LIMIT);
+    const topRespect = byHighest(valid, (row) => row.model.lifetime.totalRespect, LEADERBOARD_LIMIT);
 
     return {
       faction: {
@@ -688,35 +747,35 @@
     };
   }
 
-  function metricCard(label, value, meta, highlight) {
+  function statRow(label, value, meta, highlight, isLeader) {
     return `
-      <div class="tpda-card">
-        <div class="tpda-label">${escapeHtml(label)}</div>
-        <div class="tpda-value${highlight ? " tpda-gold" : ""}">${escapeHtml(value)}</div>
-        ${meta ? `<div class="tpda-meta">${escapeHtml(meta)}</div>` : ""}
+      <div class="tpda-row">
+        <div class="tpda-row-left">
+          <div class="tpda-row-label${isLeader ? " is-leader" : ""}">${escapeHtml(label)}</div>
+          ${meta ? `<div class="tpda-row-meta">${escapeHtml(meta)}</div>` : ""}
+        </div>
+        <div class="tpda-row-value${highlight ? " tpda-gold" : ""}">${escapeHtml(value)}</div>
       </div>
     `;
   }
 
-  function leaderboard(title, rows, formatter) {
-    const listRows = rows.length
-      ? rows.map((row, index) => {
-        const name = `${index + 1}. ${formatMemberName(row.record.member)}`;
-        const value = formatter(row.value);
-        return `
-          <div class="tpda-list-row">
-            <span class="tpda-list-name">${escapeHtml(name)}</span>
-            <span class="tpda-list-value">${escapeHtml(value)}</span>
-          </div>
-        `;
-      }).join("")
-      : `<div class="tpda-list-row"><span class="tpda-list-name">No data available.</span><span class="tpda-list-value">--</span></div>`;
+  function sectionTable(title, rowsHtml) {
     return `
-      <div class="tpda-card">
-        <div class="tpda-label">${escapeHtml(title)}</div>
-        <div class="tpda-list">${listRows}</div>
+      <div class="tpda-section">
+        <div class="tpda-section-title">${escapeHtml(title)}</div>
+        <div class="tpda-table">${rowsHtml}</div>
       </div>
     `;
+  }
+
+  function leaderboardRows(rows, formatter) {
+    if (!rows.length) {
+      return statRow("No data available", "--", null, false, true);
+    }
+    return rows.map((row, index) => {
+      const name = `${index + 1}. ${formatMemberName(row.record.member)}`;
+      return statRow(name, formatter(row.value), null, false, true);
+    }).join("");
   }
 
   function renderLoading(context, progress) {
@@ -736,14 +795,18 @@
           <div class="tpda-title">Faction Intel</div>
           <div class="tpda-subtitle">${escapeHtml(titleName)} (${escapeHtml(idLabel)})</div>
         </div>
-        <button class="tpda-btn" data-action="refresh">Refresh</button>
+        <div class="tpda-actions">
+          <button class="tpda-btn" data-action="refresh">Refresh</button>
+          <button class="tpda-btn" data-action="toggle">Expand</button>
+        </div>
       </div>
       <div class="tpda-status is-info">
         ${escapeHtml(`Loading member stats: ${done}/${total}${failed ? `, failed: ${failed}` : ""}`)}
         <div class="tpda-progress-wrap"><div class="tpda-progress-fill" style="width:${pct}%"></div></div>
-        <div class="tpda-meta">${escapeHtml(current)}</div>
+        <div class="tpda-row-meta">${escapeHtml(current)}</div>
       </div>
     `;
+    applyCollapsedUiState();
   }
 
   function renderError(context, message) {
@@ -756,10 +819,14 @@
           <div class="tpda-title">Faction Intel</div>
           <div class="tpda-subtitle">${escapeHtml(idLabel)}</div>
         </div>
-        <button class="tpda-btn" data-action="refresh">Retry</button>
+        <div class="tpda-actions">
+          <button class="tpda-btn" data-action="refresh">Retry</button>
+          <button class="tpda-btn" data-action="toggle">Expand</button>
+        </div>
       </div>
       <div class="tpda-status is-error">${escapeHtml(message)}</div>
     `;
+    applyCollapsedUiState();
   }
 
   function renderStats(context, model) {
@@ -774,9 +841,10 @@
     const factionId = model.faction.id || (context && context.factionId) || "--";
     const factionRespect = model.faction.respect;
 
+    const invalidStats = (model.invalidStats || []).filter((name) => String(name).toLowerCase() !== "totalworkingstats");
     const warningParts = [];
-    if (model.invalidStats.length) {
-      warningParts.push(`Skipped unsupported stat keys: ${model.invalidStats.join(", ")}`);
+    if (invalidStats.length) {
+      warningParts.push(`Skipped unsupported stat keys: ${invalidStats.join(", ")}`);
     }
     if (coverage.failedMembers > 0) {
       warningParts.push(`Failed member scans: ${coverage.failedMembers}`);
@@ -785,98 +853,40 @@
       ? `<div class="tpda-status is-error">${escapeHtml(warningParts.join(" | "))}</div>`
       : "";
 
-    const coverageCards = [
-      metricCard(
-        "Members Scanned",
-        `${formatInteger(coverage.scannedMembers)} / ${formatInteger(coverage.totalMembers)}`,
-        `${formatInteger(coverage.failedMembers)} failed`,
-        false
-      ),
-      metricCard(
-        "Faction Respect",
-        formatInteger(factionRespect),
-        "From faction basic endpoint",
-        false
-      ),
-      metricCard(
-        "Online / Idle",
-        `${formatInteger(status.online)} / ${formatInteger(status.idle)}`,
-        `Offline: ${formatInteger(status.offline)}`,
-        false
-      ),
-      metricCard(
-        "Hospital / Jail / Travel",
-        `${formatInteger(status.hospital)} / ${formatInteger(status.jail)} / ${formatInteger(status.traveling)}`,
-        null,
-        false
-      )
+    const quickRows = [
+      statRow("Members Scanned", `${formatInteger(coverage.scannedMembers)} / ${formatInteger(coverage.totalMembers)}`, `${formatInteger(coverage.failedMembers)} failed`, false, false),
+      statRow(`30-Day Time Played`, formatDuration(totals.timePlayed), null, true, false),
+      statRow(`30-Day Xanax Taken`, formatInteger(totals.xanaxTaken), null, true, false),
+      statRow(`30-Day Networth Gain`, formatCurrencyCompact(totals.networthGain), null, true, false),
+      statRow("Ranked War Hits", formatInteger(totals.rankedWarHits), null, false, false),
+      statRow("Total Respect", formatInteger(totals.totalRespect), null, false, false),
+      statRow("Faction Respect", formatInteger(factionRespect), null, false, false)
     ].join("");
 
-    const monthlyCards = [
-      metricCard(
-        "Time Played",
-        formatDuration(totals.timePlayed),
-        `Avg: ${decimal(averages.timePlayedHoursPerMemberPerDay, 2)} hours/member/day`,
-        true
-      ),
-      metricCard(
-        "Xanax Taken",
-        formatInteger(totals.xanaxTaken),
-        `Avg: ${decimal(averages.xanaxPerMemberPerDay, 2)} / member / day`,
-        true
-      ),
-      metricCard(
-        "Overdoses",
-        formatInteger(totals.overdoses),
-        null,
-        true
-      ),
-      metricCard(
-        "Cans Used",
-        formatInteger(totals.cansUsed),
-        `Avg: ${decimal(averages.cansPerMemberPerDay, 2)} / member / day`,
-        true
-      ),
-      metricCard(
-        "Refills",
-        `${formatInteger(totals.refillEnergy)} E + ${formatInteger(totals.refillNerve)} N`,
-        null,
-        true
-      ),
-      metricCard(
-        "Misc Boosters",
-        formatInteger(totals.miscBoosters),
-        null,
-        true
-      ),
-      metricCard(
-        "Networth Gain",
-        formatCurrencyCompact(totals.networthGain),
-        `Avg/member: ${formatCurrencyCompact(averages.networthGainPerMember)}`,
-        true
-      ),
-      metricCard(
-        "Stat Enhancers",
-        formatInteger(totals.statEnhancers30d),
-        null,
-        true
-      )
+    const coverageRows = [
+      statRow("Members Scanned", `${formatInteger(coverage.scannedMembers)} / ${formatInteger(coverage.totalMembers)}`, `${formatInteger(coverage.failedMembers)} failed`, false, false),
+      statRow("Online / Idle / Offline", `${formatInteger(status.online)} / ${formatInteger(status.idle)} / ${formatInteger(status.offline)}`, null, false, false),
+      statRow("Hospital / Jail / Travel", `${formatInteger(status.hospital)} / ${formatInteger(status.jail)} / ${formatInteger(status.traveling)}`, null, false, false),
+      statRow("Faction Respect", formatInteger(factionRespect), "From faction basic endpoint", false, false)
     ].join("");
 
-    const lifetimeCards = [
-      metricCard("Ranked War Hits", formatInteger(totals.rankedWarHits), null, false),
-      metricCard("Attacks Won", formatInteger(totals.attacksWon), null, false),
-      metricCard("Total Respect", formatInteger(totals.totalRespect), null, false),
-      metricCard("Total Networth", formatCurrencyCompact(totals.totalNetworth), null, false),
-      metricCard("Total Work Stats", formatInteger(totals.totalWorkStats), null, false),
-      metricCard("Avg Days in Faction", decimal(averages.avgDaysInFaction, 1), null, false)
+    const monthlyRows = [
+      statRow("Time Played", formatDuration(totals.timePlayed), `Avg ${decimal(averages.timePlayedHoursPerMemberPerDay, 2)} h / member / day`, true, false),
+      statRow("Xanax Taken", formatInteger(totals.xanaxTaken), `Avg ${decimal(averages.xanaxPerMemberPerDay, 2)} / member / day`, true, false),
+      statRow("Overdoses", formatInteger(totals.overdoses), null, true, false),
+      statRow("Cans Used", formatInteger(totals.cansUsed), `Avg ${decimal(averages.cansPerMemberPerDay, 2)} / member / day`, true, false),
+      statRow("Refills", `${formatInteger(totals.refillEnergy)} E + ${formatInteger(totals.refillNerve)} N`, null, true, false),
+      statRow("Misc Boosters", formatInteger(totals.miscBoosters), null, true, false),
+      statRow("Networth Gain", formatCurrencyCompact(totals.networthGain), `Avg/member ${formatCurrencyCompact(averages.networthGainPerMember)}`, true, false),
+      statRow("Stat Enhancers", formatInteger(totals.statEnhancers30d), null, true, false)
     ].join("");
 
-    const leaderCards = [
-      leaderboard("Top Xanax (30d)", model.leaders.topXanax, formatInteger),
-      leaderboard("Top Networth Gain (30d)", model.leaders.topNetworthGain, formatCurrencyCompact),
-      leaderboard("Top Ranked War Hits", model.leaders.topWarHits, formatInteger),
-      leaderboard("Top Respect for Faction", model.leaders.topRespect, formatInteger)
+    const lifetimeRows = [
+      statRow("Ranked War Hits", formatInteger(totals.rankedWarHits), null, false, false),
+      statRow("Attacks Won", formatInteger(totals.attacksWon), null, false, false),
+      statRow("Total Respect", formatInteger(totals.totalRespect), null, false, false),
+      statRow("Total Networth", formatCurrencyCompact(totals.totalNetworth), null, false, false),
+      statRow("Avg Days in Faction", decimal(averages.avgDaysInFaction, 1), null, false, false)
     ].join("");
 
     root.innerHTML = `
@@ -885,19 +895,28 @@
           <div class="tpda-title">Faction Intel</div>
           <div class="tpda-subtitle">${escapeHtml(factionName)} [${escapeHtml(factionId)}]</div>
         </div>
-        <button class="tpda-btn" data-action="refresh">Refresh</button>
+        <div class="tpda-actions">
+          <button class="tpda-btn" data-action="refresh">Refresh</button>
+          <button class="tpda-btn" data-action="toggle">Expand</button>
+        </div>
       </div>
       ${warning}
-      <div class="tpda-section-title">Coverage</div>
-      <div class="tpda-grid">${coverageCards}</div>
-      <div class="tpda-section-title">Last ${WINDOW_DAYS} days (cumulative)</div>
-      <div class="tpda-grid">${monthlyCards}</div>
-      <div class="tpda-section-title">Current / lifetime (cumulative)</div>
-      <div class="tpda-grid">${lifetimeCards}</div>
-      <div class="tpda-section-title">Top contributors</div>
-      <div class="tpda-grid">${leaderCards}</div>
+      <div class="tpda-compact">
+        ${sectionTable("Quick View", quickRows)}
+        <div class="tpda-expand-hint">Tap Expand for full faction intel.</div>
+      </div>
+      <div class="tpda-expanded">
+        ${sectionTable("Coverage", coverageRows)}
+        ${sectionTable(`Last ${WINDOW_DAYS} Days`, monthlyRows)}
+        ${sectionTable("Current / Lifetime", lifetimeRows)}
+        ${sectionTable(`Top Xanax (${WINDOW_DAYS}d)`, leaderboardRows(model.leaders.topXanax, formatInteger))}
+        ${sectionTable(`Top Networth Gain (${WINDOW_DAYS}d)`, leaderboardRows(model.leaders.topNetworthGain, formatCurrencyCompact))}
+        ${sectionTable("Top Ranked War Hits", leaderboardRows(model.leaders.topWarHits, formatInteger))}
+        ${sectionTable("Top Respect for Faction", leaderboardRows(model.leaders.topRespect, formatInteger))}
+      </div>
       <div class="tpda-footnote">This panel scans faction members, fetches their public personal stats, and aggregates totals for faction intel. Gold values are ${WINDOW_DAYS}-day activity deltas.</div>
     `;
+    applyCollapsedUiState();
   }
 
   function pruneTimedCache(cache, maxEntries) {
@@ -1097,10 +1116,18 @@
   }
 
   function handleRootClick(event) {
-    const button = event.target.closest("button[data-action='refresh']");
-    if (!button) return;
-    if (!state.context) return;
-    loadFaction(state.context, true);
+    const refreshButton = event.target.closest("button[data-action='refresh']");
+    if (refreshButton) {
+      if (!state.context) return;
+      loadFaction(state.context, true);
+      return;
+    }
+
+    const toggleButton = event.target.closest("button[data-action='toggle']");
+    if (!toggleButton) return;
+    state.collapsed = !state.collapsed;
+    persistCollapsedPreference(state.collapsed);
+    applyCollapsedUiState();
   }
 
   function tick() {
@@ -1128,6 +1155,7 @@
   }
 
   function boot() {
+    state.collapsed = readCollapsedPreference();
     tick();
     setInterval(tick, POLL_INTERVAL_MS);
   }
