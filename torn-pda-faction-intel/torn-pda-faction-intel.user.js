@@ -20,6 +20,7 @@
   const GROUP_COLLAPSE_STORAGE_KEY = "tpda_faction_intel_group_collapsed_v3";
   const MEMBER_CACHE_STORAGE_KEY = "tpda_faction_intel_member_cache_v6";
   const FACTION_MODEL_CACHE_STORAGE_KEY = "tpda_faction_intel_faction_model_cache_v6";
+  const FACTION_MEMBER_INDEX_STORAGE_KEY = "tpda_faction_intel_member_index_v6";
   const API_BASE_URL = "https://api.torn.com/v2";
   const API_KEY = "###PDA-APIKEY###";
   const API_KEY_PLACEHOLDER = `${"#".repeat(3)}PDA-APIKEY${"#".repeat(3)}`;
@@ -85,8 +86,10 @@
     invalidStatNames: new Set(),
     memberPersistTimer: null,
     factionPersistTimer: null,
+    memberIndexPersistTimer: null,
     factionCache: new Map(),
     factionModelCache: new Map(),
+    factionMemberIndex: new Map(),
     memberCache: new Map()
   };
 
@@ -570,6 +573,22 @@
     }
   }
 
+  function saveFactionMemberIndexToStorage() {
+    try {
+      const entries = Array.from(state.factionMemberIndex.entries())
+        .slice(-MAX_FACTION_CACHE_ENTRIES);
+      localStorage.setItem(
+        FACTION_MEMBER_INDEX_STORAGE_KEY,
+        JSON.stringify({
+          version: MODEL_VERSION,
+          entries
+        })
+      );
+    } catch (err) {
+      // Ignore localStorage persistence failures.
+    }
+  }
+
   function schedulePersistMemberCache() {
     if (state.memberPersistTimer) return;
     state.memberPersistTimer = setTimeout(() => {
@@ -583,6 +602,14 @@
     state.factionPersistTimer = setTimeout(() => {
       state.factionPersistTimer = null;
       saveFactionModelCacheToStorage();
+    }, 350);
+  }
+
+  function schedulePersistFactionMemberIndex() {
+    if (state.memberIndexPersistTimer) return;
+    state.memberIndexPersistTimer = setTimeout(() => {
+      state.memberIndexPersistTimer = null;
+      saveFactionMemberIndexToStorage();
     }, 350);
   }
 
@@ -620,6 +647,26 @@
     } catch (err) {
       // Ignore cache read errors.
     }
+
+    try {
+      const rawIndex = localStorage.getItem(FACTION_MEMBER_INDEX_STORAGE_KEY);
+      if (rawIndex) {
+        const parsedIndex = JSON.parse(rawIndex);
+        if (parsedIndex && parsedIndex.version === MODEL_VERSION && Array.isArray(parsedIndex.entries)) {
+          for (const [cacheKey, memberIds] of parsedIndex.entries) {
+            if (!cacheKey || !Array.isArray(memberIds)) continue;
+            const normalized = Array.from(new Set(
+              memberIds
+                .map((value) => String(value || ""))
+                .filter((value) => /^[0-9]{1,12}$/.test(value))
+            ));
+            state.factionMemberIndex.set(String(cacheKey), normalized);
+          }
+        }
+      }
+    } catch (err) {
+      // Ignore cache read errors.
+    }
   }
 
   function getFreshFactionModel(cacheKey, maxAgeMs) {
@@ -628,6 +675,57 @@
     if (record.version !== MODEL_VERSION) return null;
     if ((Date.now() - record.time) >= Math.max(0, maxAgeMs || 0)) return null;
     return record;
+  }
+
+  function setFactionMemberIndex(cacheKey, members) {
+    const normalizedKey = String(cacheKey || "");
+    if (!normalizedKey) return;
+    const memberIds = Array.isArray(members)
+      ? members
+        .map((member) => (member && member.id != null ? String(member.id) : ""))
+        .filter((value) => /^[0-9]{1,12}$/.test(value))
+      : [];
+    state.factionMemberIndex.set(normalizedKey, Array.from(new Set(memberIds)));
+    schedulePersistFactionMemberIndex();
+  }
+
+  function clearFactionCachedEntries(context) {
+    if (!context || !context.cacheKey) {
+      return { removedMembers: 0, removedFaction: false };
+    }
+
+    const cacheKey = String(context.cacheKey);
+    const overview = state.factionCache.get(cacheKey);
+    const indexedMemberIds = state.factionMemberIndex.get(cacheKey) || [];
+    const overviewMemberIds = overview && Array.isArray(overview.members)
+      ? overview.members
+        .map((member) => (member && member.id != null ? String(member.id) : ""))
+        .filter((value) => /^[0-9]{1,12}$/.test(value))
+      : [];
+    const memberIds = Array.from(new Set([...indexedMemberIds, ...overviewMemberIds]));
+
+    let removedMembers = 0;
+    for (const memberId of memberIds) {
+      if (state.memberCache.delete(memberId)) {
+        removedMembers += 1;
+      }
+    }
+
+    const removedFactionModel = state.factionModelCache.delete(cacheKey);
+    const removedFactionOverview = state.factionCache.delete(cacheKey);
+    state.factionMemberIndex.delete(cacheKey);
+
+    saveMemberCacheToStorage();
+    saveFactionModelCacheToStorage();
+    saveFactionMemberIndexToStorage();
+
+    state.activeModel = null;
+    state.activeProgress = null;
+
+    return {
+      removedMembers,
+      removedFaction: removedFactionModel || removedFactionOverview
+    };
   }
 
   function ensureSpyButton() {
@@ -1317,6 +1415,7 @@
         </div>
         <div class="tpda-actions">
           <button class="tpda-btn" data-action="refresh">Refresh</button>
+          <button class="tpda-btn" data-action="clear-cache">Clear Cache</button>
           <button class="tpda-btn" data-action="toggle">Expand</button>
         </div>
       </div>
@@ -1341,6 +1440,7 @@
         </div>
         <div class="tpda-actions">
           <button class="tpda-btn" data-action="refresh">Retry</button>
+          <button class="tpda-btn" data-action="clear-cache">Clear Cache</button>
           <button class="tpda-btn" data-action="toggle">Expand</button>
         </div>
       </div>
@@ -1435,6 +1535,7 @@
         </div>
         <div class="tpda-actions">
           <button class="tpda-btn" data-action="refresh">Refresh</button>
+          <button class="tpda-btn" data-action="clear-cache">Clear Cache</button>
           <button class="tpda-btn" data-action="toggle">Expand</button>
         </div>
       </div>
@@ -1568,6 +1669,7 @@
       basic: basicPayload && basicPayload.basic ? basicPayload.basic : null,
       members: Array.isArray(membersPayload && membersPayload.members) ? membersPayload.members : []
     };
+    setFactionMemberIndex(cacheKey, overview.members);
     state.factionCache.set(cacheKey, overview);
     pruneTimedCache(state.factionCache, MAX_FACTION_CACHE_ENTRIES);
     return overview;
@@ -1803,6 +1905,14 @@
     const refreshButton = event.target.closest("button[data-action='refresh']");
     if (refreshButton) {
       if (!state.context) return;
+      loadFaction(state.context, true);
+      return;
+    }
+
+    const clearCacheButton = event.target.closest("button[data-action='clear-cache']");
+    if (clearCacheButton) {
+      if (!state.context) return;
+      clearFactionCachedEntries(state.context);
       loadFaction(state.context, true);
       return;
     }
