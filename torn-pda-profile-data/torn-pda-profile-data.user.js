@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA - Profile Data Panel
 // @namespace    local.torn.pda.profiledata
-// @version      0.2.0
+// @version      0.3.0
 // @description  Mobile-friendly profile stats panel for Torn PDA.
 // @match        https://www.torn.com/profiles.php*
 // @run-at       document-end
@@ -39,6 +39,10 @@
   const CURRENT_STAT_NAMES = [
     "timeplayed",
     "xantaken",
+    "exttaken",
+    "traveltimes",
+    "timespenttraveling",
+    "itemsboughtabroad",
     "overdosed",
     "cantaken",
     "energydrinkused",
@@ -62,7 +66,10 @@
     requestId: 0,
     root: null,
     cache: new Map(),
-    expanded: loadExpandedPreference()
+    expanded: loadExpandedPreference(),
+    selfStatCache: null,
+    lastRender: null,
+    copyStatusTimer: null
   };
 
   function loadExpandedPreference() {
@@ -105,10 +112,10 @@
       }
       #${SCRIPT_ID} .tpda-head {
         display: flex;
-        align-items: flex-start;
+        align-items: center;
         justify-content: space-between;
         gap: 4px;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         margin-bottom: 2px;
       }
       #${SCRIPT_ID} .tpda-title {
@@ -127,16 +134,66 @@
       }
       #${SCRIPT_ID} .tpda-heading {
         min-width: 0;
-        flex: 1 1 auto;
+        flex: 0 1 32%;
+      }
+      #${SCRIPT_ID} .tpda-head-center {
+        flex: 1 1 46%;
+        min-width: 140px;
+        padding: 2px 5px;
+        border-radius: 4px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(0, 0, 0, 0.22);
+        text-align: center;
+      }
+      #${SCRIPT_ID} .tpda-center-label {
+        font-size: 8px;
+        color: #c7c7c7;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+      #${SCRIPT_ID} .tpda-center-value {
+        margin-top: 1px;
+        font-size: 12px;
+        font-weight: 700;
+        color: #f6f6f6;
+      }
+      #${SCRIPT_ID} .tpda-xan-compare {
+        margin-top: 1px;
+        font-size: 8px;
+        line-height: 1.15;
+        color: #d2dcff;
+      }
+      #${SCRIPT_ID} .tpda-xan-compare.is-safe {
+        color: #85ffad;
+        text-shadow: 0 0 5px rgba(133, 255, 173, 0.42);
+      }
+      #${SCRIPT_ID} .tpda-xan-compare.is-danger {
+        color: #8f0f0f;
+        text-shadow: 0 0 5px rgba(143, 15, 15, 0.45);
+        font-weight: 700;
       }
       #${SCRIPT_ID} .tpda-actions {
         display: flex;
-        align-items: center;
-        gap: 2px;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 1px;
         margin-left: auto;
         flex-shrink: 0;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         justify-content: flex-end;
+      }
+      #${SCRIPT_ID} .tpda-action-row {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+      #${SCRIPT_ID} .tpda-copy-status {
+        min-height: 9px;
+        font-size: 8px;
+        color: #9cd6ff;
+      }
+      #${SCRIPT_ID} .tpda-copy-status.is-error {
+        color: #ffb1b1;
       }
       #${SCRIPT_ID} .tpda-btn {
         border: 1px solid #4b4b4b;
@@ -253,6 +310,16 @@
         }
       }
       @media (max-width: 700px) {
+        #${SCRIPT_ID} .tpda-head {
+          flex-wrap: wrap;
+        }
+        #${SCRIPT_ID} .tpda-heading {
+          flex: 1 1 auto;
+        }
+        #${SCRIPT_ID} .tpda-head-center {
+          order: 3;
+          flex: 1 1 100%;
+        }
         #${SCRIPT_ID} .tpda-columns {
           grid-template-columns: 1fr;
         }
@@ -502,8 +569,12 @@
       ["refills", ["other", "refills", "energy"]],
       ["nerverefills", ["other", "refills", "nerve"]],
       ["xantaken", ["drugs", "xanax"]],
+      ["exttaken", ["drugs", "ecstasy"]],
       ["overdosed", ["drugs", "overdoses"]],
       ["rehabcost", ["drugs", "rehabilitations", "fees"]],
+      ["traveltimes", ["travel", "total"]],
+      ["timespenttraveling", ["travel", "time_spent"]],
+      ["itemsboughtabroad", ["travel", "items_bought"]],
       ["attackswon", ["attacking", "attacks", "won"]],
       ["rankedwarhits", ["attacking", "faction", "ranked_war_hits"]],
       ["respectforfaction", ["attacking", "faction", "respect"]],
@@ -549,6 +620,60 @@
     } catch (err) {
       return {};
     }
+  }
+
+  async function fetchDrugsTravelStatsSnapshot(profileId) {
+    const out = {};
+
+    try {
+      const drugsPayload = await apiGet(`/user/${profileId}/personalstats`, { cat: "drugs" });
+      const drugs = drugsPayload && drugsPayload.personalstats ? drugsPayload.personalstats : null;
+      const xanax = readNested(drugs, ["drugs", "xanax"]);
+      const ecstasy = readNested(drugs, ["drugs", "ecstasy"]);
+      if (xanax != null) out.xantaken = xanax;
+      if (ecstasy != null) out.exttaken = ecstasy;
+    } catch (err) {
+      // Optional fallback source.
+    }
+
+    try {
+      const travelPayload = await apiGet(`/user/${profileId}/personalstats`, { cat: "travel" });
+      const travel = travelPayload && travelPayload.personalstats ? travelPayload.personalstats : null;
+      const trips = readNested(travel, ["travel", "total"]);
+      const timeSpent = readNested(travel, ["travel", "time_spent"]);
+      const itemsBought = readNested(travel, ["travel", "items_bought"]);
+      if (trips != null) out.traveltimes = trips;
+      if (timeSpent != null) out.timespenttraveling = timeSpent;
+      if (itemsBought != null) out.itemsboughtabroad = itemsBought;
+    } catch (err) {
+      // Optional fallback source.
+    }
+
+    return out;
+  }
+
+  async function fetchSelfXanaxTaken(force) {
+    if (!force && state.selfStatCache && (Date.now() - state.selfStatCache.time) < CACHE_TTL_MS) {
+      return state.selfStatCache.xantaken;
+    }
+
+    let xantaken = null;
+
+    try {
+      const payload = await apiGet("/user/personalstats", { stat: ["xantaken"] });
+      const stats = normalizeStatBlock(payload ? payload.personalstats : null);
+      xantaken = toNumber(stats.xantaken);
+    } catch (err) {
+      try {
+        const payload = await apiGet("/user/personalstats", { cat: "drugs" });
+        xantaken = readNested(payload ? payload.personalstats : null, ["drugs", "xanax"]);
+      } catch (fallbackErr) {
+        xantaken = null;
+      }
+    }
+
+    state.selfStatCache = { time: Date.now(), xantaken };
+    return xantaken;
   }
 
   async function fetchDaysInFaction(profileId) {
@@ -682,6 +807,11 @@
         attacksWon: pickStatValue(current, ["attackswon"]),
         reviveSkill: pickStatValue(current, ["reviveskill"]),
         racingSkill: pickStatValue(current, ["racingskill"]),
+        totalXanaxTaken: pickStatValue(current, ["xantaken"]),
+        totalEcstasyTaken: pickStatValue(current, ["exttaken"]),
+        totalTimesTravelled: pickStatValue(current, ["traveltimes"]),
+        timeSpentTravelling: pickStatValue(current, ["timespenttraveling"]),
+        totalItemsAbroad: pickStatValue(current, ["itemsboughtabroad"]),
         totalNetworth: pickStatValue(current, ["networth"]),
         statEnhancersLifetime: pickStatValue(current, ["statenhancersused"]),
         totalRespect: pickStatValue(current, ["respectforfaction"]),
@@ -699,6 +829,162 @@
     if (e == null) return `${formatInteger(n)}N`;
     if (n == null) return `${formatInteger(e)}E`;
     return `${formatInteger(e)}E ${formatInteger(n)}N`;
+  }
+
+  function getXanaxComparison(targetXanaxTaken, yourXanaxTaken) {
+    const target = toNumber(targetXanaxTaken);
+    const yours = toNumber(yourXanaxTaken);
+
+    if (target == null || yours == null) {
+      return {
+        tone: "neutral",
+        text: "Xanax comparison unavailable."
+      };
+    }
+    if (yours > target) {
+      return {
+        tone: "safe",
+        text: `This player has taken ${formatInteger(yours - target)} less Xanax than you.`
+      };
+    }
+    if (target > yours) {
+      return {
+        tone: "danger",
+        text: `☠️This person has taken ${formatInteger(target - yours)} more Xanax than you.☠️`
+      };
+    }
+    return {
+      tone: "neutral",
+      text: "This player has taken the same Xanax as you."
+    };
+  }
+
+  function headerHtml(profileId, options) {
+    const config = options || {};
+    const toneClass = config.compareTone === "safe"
+      ? " is-safe"
+      : config.compareTone === "danger"
+        ? " is-danger"
+        : "";
+    return `
+      <div class="tpda-head">
+        <div class="tpda-heading">
+          <div class="tpda-title">Profile Data</div>
+          <div class="tpda-subtitle">User ID ${escapeHtml(profileId)}</div>
+        </div>
+        <div class="tpda-head-center">
+          <div class="tpda-center-label">Xanax Taken</div>
+          <div class="tpda-center-value">${escapeHtml(config.xanaxValue == null ? "--" : config.xanaxValue)}</div>
+          <div class="tpda-xan-compare${toneClass}">${escapeHtml(config.compareText || "Xanax comparison unavailable.")}</div>
+        </div>
+        <div class="tpda-actions">
+          <div class="tpda-action-row">
+            ${config.includeCopy ? '<button class="tpda-btn" data-action="copy">Copy</button>' : ""}
+            <button class="tpda-btn" data-action="refresh">${escapeHtml(config.refreshLabel || "Refresh")}</button>
+            <button class="tpda-btn" data-action="toggle">${escapeHtml(config.toggleLabel || "Expand")}</button>
+          </div>
+          <div class="tpda-copy-status" data-role="copy-status"></div>
+        </div>
+      </div>
+    `;
+  }
+
+  function setCopyStatus(message, isError) {
+    if (!state.root) return;
+    const node = state.root.querySelector("[data-role='copy-status']");
+    if (!node) return;
+    node.textContent = message || "";
+    node.classList.toggle("is-error", !!isError);
+
+    if (state.copyStatusTimer) {
+      clearTimeout(state.copyStatusTimer);
+      state.copyStatusTimer = null;
+    }
+    if (message) {
+      state.copyStatusTimer = setTimeout(() => {
+        const statusNode = state.root ? state.root.querySelector("[data-role='copy-status']") : null;
+        if (statusNode) statusNode.textContent = "";
+      }, 2800);
+    }
+  }
+
+  function fallbackCopyText(text) {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    textarea.style.top = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } catch (err) {
+      copied = false;
+    }
+    document.body.removeChild(textarea);
+    return copied;
+  }
+
+  async function copyText(text) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch (err) {
+        // Fallback handled below for restricted clipboard contexts.
+      }
+    }
+    return fallbackCopyText(text);
+  }
+
+  function formatCopyRate(value, suffix) {
+    if (!Number.isFinite(value)) return "--";
+    return `${decimal(value, 2)}${suffix || ""}`;
+  }
+
+  function buildDiscordTable(model) {
+    const monthly = model.monthly;
+    const lifetime = model.lifetime;
+    const lines = [
+      `Last ${WINDOW_DAYS} Days`,
+      `Time Played\t${formatDuration(monthly.timePlayed)}\t${formatCopyRate(monthly.timePlayedDailyHours, "h/d")}`,
+      `Xanax Taken\t${formatInteger(monthly.xanaxTaken)}\t${formatCopyRate(monthly.xanaxDaily, "/d")}`,
+      `Overdoses\t${formatInteger(monthly.overdoses)}\tWithout ODs ${formatCopyRate(monthly.xanaxWithoutOdDaily, "/d")}`,
+      `Cans Used\t${formatInteger(monthly.cansUsed)}\t${formatCopyRate(monthly.cansDaily, "/d")}`,
+      `Refills\t${formatRefills(monthly.refillEnergy, monthly.refillNerve)}\t-`,
+      `Misc Boosters\t${formatInteger(monthly.miscBoosters)}\t-`,
+      `Networth Gain\t${formatCurrencyCompact(monthly.networthGain)}\t-`,
+      `Stat Enhancers\t${formatInteger(monthly.statEnhancers30d)}\t-`,
+      "Current / Lifetime",
+      `Activity Streak\t${formatInteger(lifetime.activeStreak)} (Best ${formatInteger(lifetime.bestActiveStreak)})`,
+      `Ranked War Hits\t${formatInteger(lifetime.rankedWarHits)}`,
+      `Attacks Won\t${formatInteger(lifetime.attacksWon)}`,
+      `Revive Skill\t${decimal(lifetime.reviveSkill, 2)}`,
+      `Racing Skill\t${decimal(lifetime.racingSkill, 2)}`,
+      `Total # Xanax Taken\t${formatInteger(lifetime.totalXanaxTaken)}`,
+      `Total # Ecstasy Taken\t${formatInteger(lifetime.totalEcstasyTaken)}`,
+      `Total Times Travelled\t${formatInteger(lifetime.totalTimesTravelled)}`,
+      `Time Spent Travelling\t${formatDuration(lifetime.timeSpentTravelling)}`,
+      `Total # Items Abroad\t${formatInteger(lifetime.totalItemsAbroad)}`,
+      `Total Networth\t${formatCurrencyCompact(lifetime.totalNetworth)}`,
+      `Lifetime SE Usage\t${formatInteger(lifetime.statEnhancersLifetime)}`,
+      `Total Respect\t${formatInteger(lifetime.totalRespect)}`,
+      `Days in Faction\t${formatInteger(lifetime.daysInFaction)}`,
+      `Spent on Rehab\t${formatCurrencyCompact(lifetime.spentOnRehab)}`,
+      `Total Work Stats\t${formatInteger(lifetime.totalWorkStats)}`
+    ];
+    return `\`\`\`\n${lines.join("\n")}\n\`\`\``;
+  }
+
+  async function handleCopyClick() {
+    if (!state.lastRender || !state.lastRender.model) {
+      setCopyStatus("Nothing to copy yet.", true);
+      return;
+    }
+    const copied = await copyText(buildDiscordTable(state.lastRender.model));
+    setCopyStatus(copied ? "Copied for Discord." : "Copy failed.", !copied);
   }
 
   function tableRowsHtml(rows, includeMeta) {
@@ -733,18 +1019,17 @@
   function renderLoading(profileId) {
     const root = ensureRoot();
     if (!root) return;
+    state.lastRender = null;
     const toggleLabel = state.expanded ? "Collapse" : "Expand";
     root.innerHTML = `
-      <div class="tpda-head">
-        <div class="tpda-heading">
-          <div class="tpda-title">Profile Data</div>
-          <div class="tpda-subtitle">User ID ${escapeHtml(profileId)}</div>
-        </div>
-        <div class="tpda-actions">
-          <button class="tpda-btn" data-action="refresh">Refresh</button>
-          <button class="tpda-btn" data-action="toggle">${toggleLabel}</button>
-        </div>
-      </div>
+      ${headerHtml(profileId, {
+        toggleLabel,
+        refreshLabel: "Refresh",
+        includeCopy: false,
+        xanaxValue: "--",
+        compareText: "Loading xanax comparison...",
+        compareTone: "neutral"
+      })}
       <div class="tpda-status is-info">Loading profile stats from Torn API...</div>
     `;
   }
@@ -752,23 +1037,22 @@
   function renderError(profileId, message) {
     const root = ensureRoot();
     if (!root) return;
+    state.lastRender = null;
     const toggleLabel = state.expanded ? "Collapse" : "Expand";
     root.innerHTML = `
-      <div class="tpda-head">
-        <div class="tpda-heading">
-          <div class="tpda-title">Profile Data</div>
-          <div class="tpda-subtitle">User ID ${escapeHtml(profileId)}</div>
-        </div>
-        <div class="tpda-actions">
-          <button class="tpda-btn" data-action="refresh">Retry</button>
-          <button class="tpda-btn" data-action="toggle">${toggleLabel}</button>
-        </div>
-      </div>
+      ${headerHtml(profileId, {
+        toggleLabel,
+        refreshLabel: "Retry",
+        includeCopy: false,
+        xanaxValue: "--",
+        compareText: "Xanax comparison unavailable.",
+        compareTone: "neutral"
+      })}
       <div class="tpda-status is-error">${escapeHtml(message)}</div>
     `;
   }
 
-  function renderStats(profileId, model) {
+  function renderStats(profileId, model, xanaxComparison) {
     const monthly = model.monthly;
     const lifetime = model.lifetime;
 
@@ -863,6 +1147,36 @@
         meta: null
       },
       {
+        raw: lifetime.totalXanaxTaken,
+        label: "Total # Xanax Taken",
+        value: formatInteger(lifetime.totalXanaxTaken),
+        meta: null
+      },
+      {
+        raw: lifetime.totalEcstasyTaken,
+        label: "Total # Ecstasy Taken",
+        value: formatInteger(lifetime.totalEcstasyTaken),
+        meta: null
+      },
+      {
+        raw: lifetime.totalTimesTravelled,
+        label: "Total Times Travelled",
+        value: formatInteger(lifetime.totalTimesTravelled),
+        meta: null
+      },
+      {
+        raw: lifetime.timeSpentTravelling,
+        label: "Time Spent Travelling",
+        value: formatDuration(lifetime.timeSpentTravelling),
+        meta: null
+      },
+      {
+        raw: lifetime.totalItemsAbroad,
+        label: "Total # Items Abroad",
+        value: formatInteger(lifetime.totalItemsAbroad),
+        meta: null
+      },
+      {
         raw: lifetime.totalNetworth,
         label: "Total Networth",
         value: formatCurrencyCompact(lifetime.totalNetworth),
@@ -906,28 +1220,27 @@
       { raw: monthly.xanaxTaken, label: "30-Day Xanax Taken", value: formatInteger(monthly.xanaxTaken), highlight: true },
       { raw: monthly.overdoses, label: "30-Day Overdoses", value: formatInteger(monthly.overdoses), highlight: true },
       { raw: monthly.networthGain, label: "30-Day Networth Gain", value: formatCurrencyCompact(monthly.networthGain), highlight: true },
+      { raw: lifetime.totalXanaxTaken, label: "Total Xanax Taken", value: formatInteger(lifetime.totalXanaxTaken) },
       { raw: lifetime.totalNetworth, label: "Total Networth", value: formatCurrencyCompact(lifetime.totalNetworth) },
       { raw: lifetime.attacksWon, label: "Attacks Won", value: formatInteger(lifetime.attacksWon) },
       { raw: lifetime.totalRespect, label: "Total Respect", value: formatInteger(lifetime.totalRespect) },
       { raw: lifetime.daysInFaction, label: "Days in Faction", value: formatInteger(lifetime.daysInFaction) }
     ];
 
+    const compare = xanaxComparison || { tone: "neutral", text: "Xanax comparison unavailable." };
     const toggleLabel = state.expanded ? "Collapse" : "Expand";
-    const header = `
-      <div class="tpda-head">
-        <div class="tpda-heading">
-          <div class="tpda-title">Profile Data</div>
-          <div class="tpda-subtitle">User ID ${escapeHtml(profileId)}</div>
-        </div>
-        <div class="tpda-actions">
-          <button class="tpda-btn" data-action="refresh">Refresh</button>
-          <button class="tpda-btn" data-action="toggle">${toggleLabel}</button>
-        </div>
-      </div>
-    `;
+    const header = headerHtml(profileId, {
+      toggleLabel,
+      refreshLabel: "Refresh",
+      includeCopy: true,
+      xanaxValue: formatInteger(lifetime.totalXanaxTaken),
+      compareText: compare.text,
+      compareTone: compare.tone
+    });
 
     const root = ensureRoot();
     if (!root) return;
+    state.lastRender = { profileId, model, xanaxComparison: compare };
 
     if (!state.expanded) {
       root.innerHTML = `
@@ -965,13 +1278,15 @@
 
     const monthAgo = Math.floor(Date.now() / 1000) - WINDOW_SECONDS;
 
-    const [currentResult, historicResult, currentPopular, historicPopular, currentJobs, daysInFaction] = await Promise.all([
+    const [currentResult, historicResult, currentPopular, historicPopular, currentJobs, currentDrugsTravel, daysInFaction, selfXanaxTaken] = await Promise.all([
       fetchStatsSnapshot(profileId, CURRENT_STAT_NAMES, null, "Current"),
       fetchStatsSnapshot(profileId, MONTHLY_STAT_NAMES, monthAgo, "Historical"),
       fetchPopularStatsSnapshot(profileId, null),
       fetchPopularStatsSnapshot(profileId, monthAgo),
       fetchJobsStatsSnapshot(profileId),
-      fetchDaysInFaction(profileId).catch(() => null)
+      fetchDrugsTravelStatsSnapshot(profileId),
+      fetchDaysInFaction(profileId).catch(() => null),
+      fetchSelfXanaxTaken(force).catch(() => null)
     ]);
 
     const invalidStats = Array.from(new Set([
@@ -985,6 +1300,7 @@
     const currentStats = {
       ...(currentPopular || {}),
       ...(currentJobs || {}),
+      ...(currentDrugsTravel || {}),
       ...(currentResult.stats || {})
     };
     const historicStats = {
@@ -993,7 +1309,8 @@
     };
 
     const model = buildModel(currentStats, historicStats, daysInFaction);
-    const record = { time: Date.now(), model, invalidStats };
+    const xanaxComparison = getXanaxComparison(model.lifetime.totalXanaxTaken, selfXanaxTaken);
+    const record = { time: Date.now(), model, invalidStats, xanaxComparison };
     state.cache.set(profileId, record);
     pruneCache();
     return record;
@@ -1012,7 +1329,7 @@
     try {
       const record = await fetchProfileData(profileId, !!force);
       if (thisRequestId !== state.requestId) return;
-      renderStats(profileId, record.model);
+      renderStats(profileId, record.model, record.xanaxComparison);
     } catch (err) {
       if (thisRequestId !== state.requestId) return;
       const message = err && err.message ? err.message : "Failed to load profile data.";
@@ -1030,11 +1347,15 @@
       if (state.profileId) {
         const cached = state.cache.get(state.profileId);
         if (cached?.model) {
-          renderStats(state.profileId, cached.model);
+          renderStats(state.profileId, cached.model, cached.xanaxComparison);
         } else {
           loadProfile(state.profileId, false);
         }
       }
+      return;
+    }
+    if (action === "copy") {
+      handleCopyClick();
       return;
     }
     if (action === "refresh") {
