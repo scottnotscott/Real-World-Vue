@@ -18,9 +18,9 @@
   const STYLE_ID = "tpda-faction-intel-style";
   const COLLAPSED_STORAGE_KEY = "tpda_faction_intel_collapsed_v1";
   const GROUP_COLLAPSE_STORAGE_KEY = "tpda_faction_intel_group_collapsed_v3";
-  const MEMBER_CACHE_STORAGE_KEY = "tpda_faction_intel_member_cache_v6";
-  const FACTION_MODEL_CACHE_STORAGE_KEY = "tpda_faction_intel_faction_model_cache_v6";
-  const FACTION_MEMBER_INDEX_STORAGE_KEY = "tpda_faction_intel_member_index_v6";
+  const MEMBER_CACHE_STORAGE_KEY = "tpda_faction_intel_member_cache_v7";
+  const FACTION_MODEL_CACHE_STORAGE_KEY = "tpda_faction_intel_faction_model_cache_v7";
+  const FACTION_MEMBER_INDEX_STORAGE_KEY = "tpda_faction_intel_member_index_v7";
   const API_BASE_URL = "https://api.torn.com/v2";
   const API_KEY = "###PDA-APIKEY###";
   const API_KEY_PLACEHOLDER = `${"#".repeat(3)}PDA-APIKEY${"#".repeat(3)}`;
@@ -40,7 +40,7 @@
   const MAX_FACTION_CACHE_ENTRIES = 12;
   const MAX_MEMBER_CACHE_ENTRIES = 650;
   const LEADERBOARD_LIMIT = 3;
-  const MODEL_VERSION = 6;
+  const MODEL_VERSION = 7;
   const CANCELLED_ERROR_TOKEN = "__tpda_cancelled__";
 
   const DEFAULT_COLLAPSED_SECTION_KEYS = [
@@ -49,6 +49,7 @@
     "section-lifetime",
     "group-time-activity",
     "group-drugs",
+    "group-fun",
     "group-finance",
     "group-combat-30d",
     "group-combat-alltime"
@@ -64,6 +65,10 @@
     "boostersused",
     "statenhancersused",
     "networth",
+    "exttaken",
+    "traveltimes",
+    "timespenttraveling",
+    "itemsboughtabroad",
     "rankedwarhits",
     "attackswon",
     "respectforfaction"
@@ -83,6 +88,7 @@
     activeContext: null,
     expandedTables: new Set(),
     collapsedGroups: new Set(),
+    tableExports: new Map(),
     invalidStatNames: new Set(),
     memberPersistTimer: null,
     factionPersistTimer: null,
@@ -250,6 +256,13 @@
         justify-content: space-between;
         gap: 6px;
         margin: 0 0 4px;
+      }
+      #${SCRIPT_ID} .tpda-section-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 4px;
+        flex-wrap: wrap;
       }
       #${SCRIPT_ID} .tpda-section-title {
         margin: 0;
@@ -1110,9 +1123,73 @@
   }
 
   function formatMemberName(member) {
-    const id = member && member.id != null ? `[${member.id}]` : "";
     const name = member && member.name ? member.name : "Unknown";
-    return `${name} ${id}`.trim();
+    return String(name).trim();
+  }
+
+  function escapeMarkdownCell(value) {
+    return String(value == null ? "" : value)
+      .replace(/\|/g, "\\|")
+      .replace(/\r?\n/g, " ");
+  }
+
+  function buildLeaderboardMarkdown(title, rows, formatter) {
+    const lines = [];
+    lines.push(String(title || "Leaderboard"));
+    lines.push("| # | Name | Value |");
+    lines.push("| --- | --- | --- |");
+    if (!Array.isArray(rows) || !rows.length) {
+      lines.push("| - | No data available | -- |");
+    } else {
+      rows.forEach((row, index) => {
+        const rank = index + 1;
+        const memberName = escapeMarkdownCell(formatMemberName(row && row.member ? row.member : null));
+        const value = escapeMarkdownCell(formatter(row && row.value));
+        lines.push(`| ${rank} | ${memberName} | ${value} |`);
+      });
+    }
+    return lines.join("\n");
+  }
+
+  async function copyText(text) {
+    const payload = String(text == null ? "" : text);
+    if (!payload) return false;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      try {
+        await navigator.clipboard.writeText(payload);
+        return true;
+      } catch (err) {
+        // fallback below
+      }
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = payload;
+    textarea.style.position = "fixed";
+    textarea.style.top = "-9999px";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch (err) {
+      ok = false;
+    }
+    document.body.removeChild(textarea);
+    return ok;
+  }
+
+  function flashButtonLabel(button, nextLabel, durationMs) {
+    if (!button) return;
+    const original = button.textContent;
+    button.textContent = nextLabel;
+    setTimeout(() => {
+      if (button && document.contains(button)) {
+        button.textContent = original;
+      }
+    }, Number.isFinite(durationMs) ? durationMs : 1200);
   }
 
   function sumAccumulator() {
@@ -1151,9 +1228,17 @@
     const boostersUsed = delta(current.boostersused, historic.boostersused, false);
     const statEnhancers30d = delta(current.statenhancersused, historic.statenhancersused, false);
     const networthGain = delta(current.networth, historic.networth, true);
+    const extTaken30d = delta(current.exttaken, historic.exttaken, false);
+    const travelTimes30d = delta(current.traveltimes, historic.traveltimes, false);
+    const travelTimeSpent30d = delta(current.timespenttraveling, historic.timespenttraveling, false);
+    const itemsBoughtAbroad30d = delta(current.itemsboughtabroad, historic.itemsboughtabroad, false);
     let rankedWarHits30d = delta(current.rankedwarhits, historic.rankedwarhits, false);
     let attacksWon30d = delta(current.attackswon, historic.attackswon, false);
     let respectGained30d = delta(current.respectforfaction, historic.respectforfaction, false);
+    const safeExtTaken30d = extTaken30d == null && toNumber(current.exttaken) != null ? 0 : extTaken30d;
+    const safeTravelTimes30d = travelTimes30d == null && toNumber(current.traveltimes) != null ? 0 : travelTimes30d;
+    const safeTravelTimeSpent30d = travelTimeSpent30d == null && toNumber(current.timespenttraveling) != null ? 0 : travelTimeSpent30d;
+    const safeItemsBoughtAbroad30d = itemsBoughtAbroad30d == null && toNumber(current.itemsboughtabroad) != null ? 0 : itemsBoughtAbroad30d;
     if (rankedWarHits30d == null && toNumber(current.rankedwarhits) != null) rankedWarHits30d = 0;
     if (attacksWon30d == null && toNumber(current.attackswon) != null) attacksWon30d = 0;
     if (respectGained30d == null && toNumber(current.respectforfaction) != null) respectGained30d = 0;
@@ -1174,6 +1259,10 @@
         miscBoosters,
         networthGain,
         statEnhancers30d,
+        extTaken30d: safeExtTaken30d,
+        travelTimes30d: safeTravelTimes30d,
+        travelTimeSpent30d: safeTravelTimeSpent30d,
+        itemsBoughtAbroad30d: safeItemsBoughtAbroad30d,
         rankedWarHits30d,
         attacksWon30d,
         respectGained30d
@@ -1181,6 +1270,10 @@
       lifetime: {
         timePlayedAllTime: toNumber(current.timeplayed),
         totalXanax: toNumber(current.xantaken),
+        totalExtTaken: toNumber(current.exttaken),
+        totalTravelTimes: toNumber(current.traveltimes),
+        totalTravelTimeSpent: toNumber(current.timespenttraveling),
+        totalItemsBoughtAbroad: toNumber(current.itemsboughtabroad),
         rankedWarHits: toNumber(current.rankedwarhits),
         attacksWon: toNumber(current.attackswon),
         totalRespect: toNumber(current.respectforfaction),
@@ -1228,9 +1321,17 @@
     const aMiscBoosters = sumAccumulator();
     const aNetworthGain = sumAccumulator();
     const aStatEnhancers30d = sumAccumulator();
+    const aExtTaken30d = sumAccumulator();
+    const aTravelTimes30d = sumAccumulator();
+    const aTravelTimeSpent30d = sumAccumulator();
+    const aItemsBoughtAbroad30d = sumAccumulator();
     const aWarHits30d = sumAccumulator();
     const aAttacksWon30d = sumAccumulator();
     const aRespectGained30d = sumAccumulator();
+    const aExtTakenAllTime = sumAccumulator();
+    const aTravelTimesAllTime = sumAccumulator();
+    const aTravelTimeSpentAllTime = sumAccumulator();
+    const aItemsBoughtAbroadAllTime = sumAccumulator();
     const aWarHits = sumAccumulator();
     const aAttacksWon = sumAccumulator();
     const aRespect = sumAccumulator();
@@ -1248,9 +1349,17 @@
       includeAccumulator(aMiscBoosters, row.model.monthly.miscBoosters);
       includeAccumulator(aNetworthGain, row.model.monthly.networthGain);
       includeAccumulator(aStatEnhancers30d, row.model.monthly.statEnhancers30d);
+      includeAccumulator(aExtTaken30d, row.model.monthly.extTaken30d);
+      includeAccumulator(aTravelTimes30d, row.model.monthly.travelTimes30d);
+      includeAccumulator(aTravelTimeSpent30d, row.model.monthly.travelTimeSpent30d);
+      includeAccumulator(aItemsBoughtAbroad30d, row.model.monthly.itemsBoughtAbroad30d);
       includeAccumulator(aWarHits30d, row.model.monthly.rankedWarHits30d);
       includeAccumulator(aAttacksWon30d, row.model.monthly.attacksWon30d);
       includeAccumulator(aRespectGained30d, row.model.monthly.respectGained30d);
+      includeAccumulator(aExtTakenAllTime, row.model.lifetime.totalExtTaken);
+      includeAccumulator(aTravelTimesAllTime, row.model.lifetime.totalTravelTimes);
+      includeAccumulator(aTravelTimeSpentAllTime, row.model.lifetime.totalTravelTimeSpent);
+      includeAccumulator(aItemsBoughtAbroadAllTime, row.model.lifetime.totalItemsBoughtAbroad);
       includeAccumulator(aWarHits, row.model.lifetime.rankedWarHits);
       includeAccumulator(aAttacksWon, row.model.lifetime.attacksWon);
       includeAccumulator(aRespect, row.model.lifetime.totalRespect);
@@ -1272,6 +1381,14 @@
     const topWarHits30d = byHighest(valid, (row) => row.model.monthly.rankedWarHits30d);
     const topAttacksWon30d = byHighest(valid, (row) => row.model.monthly.attacksWon30d);
     const topRespectGained30d = byHighest(valid, (row) => row.model.monthly.respectGained30d);
+    const topExtTaken30d = byHighest(valid, (row) => row.model.monthly.extTaken30d);
+    const topExtTakenAllTime = byHighest(valid, (row) => row.model.lifetime.totalExtTaken);
+    const topTravelTimes30d = byHighest(valid, (row) => row.model.monthly.travelTimes30d);
+    const topTravelTimesAllTime = byHighest(valid, (row) => row.model.lifetime.totalTravelTimes);
+    const topTravelTimeSpent30d = byHighest(valid, (row) => row.model.monthly.travelTimeSpent30d);
+    const topTravelTimeSpentAllTime = byHighest(valid, (row) => row.model.lifetime.totalTravelTimeSpent);
+    const topItemsBoughtAbroad30d = byHighest(valid, (row) => row.model.monthly.itemsBoughtAbroad30d);
+    const topItemsBoughtAbroadAllTime = byHighest(valid, (row) => row.model.lifetime.totalItemsBoughtAbroad);
 
     return {
       faction: {
@@ -1295,9 +1412,17 @@
         miscBoosters: aMiscBoosters.sum,
         networthGain: aNetworthGain.sum,
         statEnhancers30d: aStatEnhancers30d.sum,
+        extTaken30d: aExtTaken30d.sum,
+        travelTimes30d: aTravelTimes30d.sum,
+        travelTimeSpent30d: aTravelTimeSpent30d.sum,
+        itemsBoughtAbroad30d: aItemsBoughtAbroad30d.sum,
         rankedWarHits30d: aWarHits30d.sum,
         attacksWon30d: aAttacksWon30d.sum,
         respectGained30d: aRespectGained30d.sum,
+        totalExtTaken: aExtTakenAllTime.sum,
+        totalTravelTimes: aTravelTimesAllTime.sum,
+        totalTravelTimeSpent: aTravelTimeSpentAllTime.sum,
+        totalItemsBoughtAbroad: aItemsBoughtAbroadAllTime.sum,
         rankedWarHits: aWarHits.sum,
         attacksWon: aAttacksWon.sum,
         totalRespect: aRespect.sum,
@@ -1325,7 +1450,15 @@
         topOverdosesAllTime,
         topWarHits30d,
         topAttacksWon30d,
-        topRespectGained30d
+        topRespectGained30d,
+        topExtTaken30d,
+        topExtTakenAllTime,
+        topTravelTimes30d,
+        topTravelTimesAllTime,
+        topTravelTimeSpent30d,
+        topTravelTimeSpentAllTime,
+        topItemsBoughtAbroad30d,
+        topItemsBoughtAbroadAllTime
       },
       failedMembers: failed.map((row) => ({
         id: row.member && row.member.id != null ? String(row.member.id) : "",
@@ -1353,7 +1486,7 @@
       <div class="tpda-section">
         <div class="tpda-section-head">
           <div class="tpda-section-title">${escapeHtml(title)}</div>
-          ${actionHtml || ""}
+          ${actionHtml ? `<div class="tpda-section-actions">${actionHtml}</div>` : ""}
         </div>
         <div class="tpda-table">${rowsHtml}</div>
       </div>
@@ -1371,12 +1504,22 @@
   }
 
   function buildLeaderboardSection(title, tableKey, rows, formatter) {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    state.tableExports.set(tableKey, {
+      title,
+      rows: safeRows,
+      formatter
+    });
     const expanded = state.expandedTables.has(tableKey);
-    const visible = expanded ? rows : rows.slice(0, LEADERBOARD_LIMIT);
+    const visible = expanded ? safeRows : safeRows.slice(0, LEADERBOARD_LIMIT);
     const rowsHtml = leaderboardRows(visible, formatter);
-    const actionHtml = rows.length > LEADERBOARD_LIMIT
-      ? `<button class="tpda-btn tpda-mini" data-action="toggle-table" data-table="${escapeHtml(tableKey)}">${expanded ? "Less" : `All (${rows.length})`}</button>`
-      : "";
+    const actions = [
+      `<button class="tpda-btn tpda-mini" data-action="copy-table" data-table="${escapeHtml(tableKey)}">Copy</button>`
+    ];
+    if (safeRows.length > LEADERBOARD_LIMIT) {
+      actions.push(`<button class="tpda-btn tpda-mini" data-action="toggle-table" data-table="${escapeHtml(tableKey)}">${expanded ? "Less" : `All (${safeRows.length})`}</button>`);
+    }
+    const actionHtml = actions.join("");
     return sectionTable(title, rowsHtml, actionHtml);
   }
 
@@ -1415,6 +1558,7 @@
   function renderLoading(context, progress) {
     const root = ensureRoot();
     if (!root) return;
+    state.tableExports = new Map();
     const titleName = context && context.name ? context.name : "Faction";
     const idLabel = context && context.factionId ? `ID ${context.factionId}` : "Your faction";
     const done = progress && Number.isFinite(progress.done) ? progress.done : 0;
@@ -1447,6 +1591,7 @@
   function renderError(context, message) {
     const root = ensureRoot();
     if (!root) return;
+    state.tableExports = new Map();
     const idLabel = context && context.factionId ? `ID ${context.factionId}` : "Unknown faction";
     root.innerHTML = `
       <div class="tpda-head">
@@ -1468,6 +1613,7 @@
   function renderStats(context, model, progress) {
     const root = ensureRoot();
     if (!root) return;
+    state.tableExports = new Map();
     state.activeContext = context ? Object.assign({}, context) : null;
     state.activeModel = model || null;
     state.activeProgress = progress || null;
@@ -1575,6 +1721,16 @@
           buildLeaderboardSection(`Top Overdoses (${WINDOW_DAYS}d)`, "overdoses30d", model.leaders.topOverdoses30d || [], formatInteger),
           buildLeaderboardSection("Top Overdoses (all-time)", "overdosesAlltime", model.leaders.topOverdosesAllTime || [], formatInteger)
         ])}
+        ${buildLeaderboardGroup("group-fun", "Fun", [
+          buildLeaderboardSection(`Top Ecstasy Taken (${WINDOW_DAYS}d)`, "extTaken30d", model.leaders.topExtTaken30d || [], formatInteger),
+          buildLeaderboardSection("Top Ecstasy Taken (all-time)", "extTakenAllTime", model.leaders.topExtTakenAllTime || [], formatInteger),
+          buildLeaderboardSection(`Top Travels (${WINDOW_DAYS}d)`, "travelTimes30d", model.leaders.topTravelTimes30d || [], formatInteger),
+          buildLeaderboardSection("Top Travels (all-time)", "travelTimesAllTime", model.leaders.topTravelTimesAllTime || [], formatInteger),
+          buildLeaderboardSection(`Top Time Spent Traveling (${WINDOW_DAYS}d)`, "travelTimeSpent30d", model.leaders.topTravelTimeSpent30d || [], formatDuration),
+          buildLeaderboardSection("Top Time Spent Traveling (all-time)", "travelTimeSpentAllTime", model.leaders.topTravelTimeSpentAllTime || [], formatDuration),
+          buildLeaderboardSection(`Top Items Bought Abroad (${WINDOW_DAYS}d)`, "itemsBoughtAbroad30d", model.leaders.topItemsBoughtAbroad30d || [], formatInteger),
+          buildLeaderboardSection("Top Items Bought Abroad (all-time)", "itemsBoughtAbroadAllTime", model.leaders.topItemsBoughtAbroadAllTime || [], formatInteger)
+        ])}
         ${buildLeaderboardGroup("group-finance", "Finance", [
           buildLeaderboardSection(`Networth Change (${WINDOW_DAYS}d)`, "networthChange30d", model.leaders.topNetworthChange || [], formatSignedCompact),
           buildLeaderboardSection("Networth (all-time)", "networthAllTime", model.leaders.topNetworthAllTime || [], formatCompactUnsigned)
@@ -1610,7 +1766,15 @@
     const lifetime = cacheEntry.model.lifetime || {};
     if (!Object.prototype.hasOwnProperty.call(monthly, "attacksWon30d")) return false;
     if (!Object.prototype.hasOwnProperty.call(monthly, "respectGained30d")) return false;
+    if (!Object.prototype.hasOwnProperty.call(monthly, "extTaken30d")) return false;
+    if (!Object.prototype.hasOwnProperty.call(monthly, "travelTimes30d")) return false;
+    if (!Object.prototype.hasOwnProperty.call(monthly, "travelTimeSpent30d")) return false;
+    if (!Object.prototype.hasOwnProperty.call(monthly, "itemsBoughtAbroad30d")) return false;
     if (!Object.prototype.hasOwnProperty.call(lifetime, "timePlayedAllTime")) return false;
+    if (!Object.prototype.hasOwnProperty.call(lifetime, "totalExtTaken")) return false;
+    if (!Object.prototype.hasOwnProperty.call(lifetime, "totalTravelTimes")) return false;
+    if (!Object.prototype.hasOwnProperty.call(lifetime, "totalTravelTimeSpent")) return false;
+    if (!Object.prototype.hasOwnProperty.call(lifetime, "totalItemsBoughtAbroad")) return false;
     return true;
   }
 
@@ -1945,6 +2109,27 @@
       if (state.activeContext && state.activeModel) {
         renderStats(state.activeContext, state.activeModel, state.activeProgress);
       }
+      return;
+    }
+
+    const copyTableButton = event.target.closest("button[data-action='copy-table']");
+    if (copyTableButton) {
+      const tableKey = copyTableButton.getAttribute("data-table");
+      if (!tableKey) return;
+      const exportRecord = state.tableExports.get(tableKey);
+      if (!exportRecord) {
+        flashButtonLabel(copyTableButton, "No Data", 1200);
+        return;
+      }
+      const body = buildLeaderboardMarkdown(
+        exportRecord.title,
+        exportRecord.rows,
+        exportRecord.formatter || formatInteger
+      );
+      const wrapped = `\`\`\`\n${body}\n\`\`\``;
+      copyText(wrapped).then((ok) => {
+        flashButtonLabel(copyTableButton, ok ? "Copied" : "Failed", 1200);
+      });
       return;
     }
 
