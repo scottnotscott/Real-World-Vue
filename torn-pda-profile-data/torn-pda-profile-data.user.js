@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Torn PDA - Profile Data Panel
 // @namespace    local.torn.pda.profiledata
-// @version      0.1.0
+// @version      0.2.0
 // @description  Mobile-friendly profile stats panel for Torn PDA.
-// @match        https://www.torn.com/*
+// @match        https://www.torn.com/profiles.php*
 // @run-at       document-end
 // @grant        none
 // ==/UserScript==
@@ -21,12 +21,14 @@
   const POLL_INTERVAL_MS = 1200;
   const CACHE_TTL_MS = 5 * 60 * 1000;
   const MAX_CACHE_ENTRIES = 30;
+  const LS_EXPANDED_KEY = "tpda_profile_data_expanded_v1";
 
   const MONTHLY_STAT_NAMES = [
     "timeplayed",
     "xantaken",
     "overdosed",
     "cantaken",
+    "energydrinkused",
     "refills",
     "nerverefills",
     "boostersused",
@@ -39,6 +41,7 @@
     "xantaken",
     "overdosed",
     "cantaken",
+    "energydrinkused",
     "refills",
     "nerverefills",
     "boostersused",
@@ -51,16 +54,32 @@
     "reviveskill",
     "racingskill",
     "respectforfaction",
-    "rehabcost",
-    "totalworkingstats"
+    "rehabcost"
   ];
 
   const state = {
     profileId: null,
     requestId: 0,
     root: null,
-    cache: new Map()
+    cache: new Map(),
+    expanded: loadExpandedPreference()
   };
+
+  function loadExpandedPreference() {
+    try {
+      return localStorage.getItem(LS_EXPANDED_KEY) === "1";
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function saveExpandedPreference(isExpanded) {
+    try {
+      localStorage.setItem(LS_EXPANDED_KEY, isExpanded ? "1" : "0");
+    } catch (err) {
+      // Ignore storage failures.
+    }
+  }
 
   function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
@@ -69,50 +88,74 @@
     style.textContent = `
       #${SCRIPT_ID} {
         box-sizing: border-box;
-        width: min(980px, calc(100vw - 16px));
-        margin: 8px auto;
-        padding: 10px;
-        border-radius: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        background: rgba(20, 20, 24, 0.92);
+        width: 100%;
+        max-width: 100%;
+        margin: 0;
+        padding: 3px 4px;
+        border-radius: 5px;
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        background: rgba(14, 14, 18, 0.95);
         color: #e5e5e5;
         font-family: Arial, sans-serif;
-        line-height: 1.25;
+        line-height: 1.1;
+        overflow: hidden;
       }
       #${SCRIPT_ID} * {
         box-sizing: border-box;
       }
       #${SCRIPT_ID} .tpda-head {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         justify-content: space-between;
-        gap: 8px;
-        margin-bottom: 8px;
+        gap: 4px;
+        flex-wrap: wrap;
+        margin-bottom: 2px;
       }
       #${SCRIPT_ID} .tpda-title {
-        font-size: 16px;
+        font-size: 12px;
         font-weight: 700;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       #${SCRIPT_ID} .tpda-subtitle {
-        font-size: 11px;
-        color: #bdbdbd;
+        font-size: 9px;
+        color: #ffffff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #${SCRIPT_ID} .tpda-heading {
+        min-width: 0;
+        flex: 1 1 auto;
+      }
+      #${SCRIPT_ID} .tpda-actions {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        margin-left: auto;
+        flex-shrink: 0;
+        flex-wrap: wrap;
+        justify-content: flex-end;
       }
       #${SCRIPT_ID} .tpda-btn {
         border: 1px solid #4b4b4b;
         background: #2a2a2a;
         color: #f0f0f0;
-        border-radius: 5px;
-        padding: 4px 8px;
-        font-size: 12px;
+        border-radius: 4px;
+        padding: 1px 5px;
+        font-size: 9px;
+        line-height: 1.1;
+        min-height: 20px;
       }
       #${SCRIPT_ID} .tpda-btn:active {
         transform: translateY(1px);
       }
       #${SCRIPT_ID} .tpda-status {
-        padding: 6px 8px;
-        border-radius: 6px;
-        margin-bottom: 8px;
-        font-size: 12px;
+        padding: 3px 5px;
+        border-radius: 4px;
+        margin-bottom: 3px;
+        font-size: 9px;
       }
       #${SCRIPT_ID} .tpda-status.is-error {
         background: rgba(155, 48, 48, 0.2);
@@ -124,56 +167,99 @@
         border: 1px solid rgba(99, 145, 225, 0.45);
         color: #d7e7ff;
       }
-      #${SCRIPT_ID} .tpda-section-title {
-        margin: 10px 0 6px;
-        font-size: 12px;
-        font-weight: 700;
-        color: #d9d9d9;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
-      }
-      #${SCRIPT_ID} .tpda-grid {
+      #${SCRIPT_ID} .tpda-columns {
         display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 6px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 3px;
       }
-      #${SCRIPT_ID} .tpda-card {
-        border-radius: 6px;
-        background: rgba(255, 255, 255, 0.04);
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        padding: 7px 8px;
-        min-height: 62px;
+      #${SCRIPT_ID} .tpda-block {
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.025);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        padding: 3px 4px;
       }
-      #${SCRIPT_ID} .tpda-label {
-        color: #bfbfbf;
-        font-size: 11px;
+      #${SCRIPT_ID} .tpda-block-title {
+        font-size: 8px;
+        color: #ffffff;
+        margin-bottom: 2px;
+        letter-spacing: 0.02em;
       }
-      #${SCRIPT_ID} .tpda-value {
-        margin-top: 2px;
-        font-size: 18px;
+      #${SCRIPT_ID} .tpda-table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+      }
+      #${SCRIPT_ID} .tpda-table tbody tr + tr td {
+        border-top: 1px dotted rgba(255, 255, 255, 0.07);
+      }
+      #${SCRIPT_ID} .tpda-table td {
+        font-size: 9px;
+        padding: 1px 1px;
+        vertical-align: middle;
+        color: #ffffff;
+      }
+      #${SCRIPT_ID} .tpda-table.has-meta .tpda-key-cell {
+        width: 34%;
+      }
+      #${SCRIPT_ID} .tpda-table.has-meta .tpda-value-cell {
+        width: 33%;
+      }
+      #${SCRIPT_ID} .tpda-table.has-meta .tpda-meta-cell {
+        width: 33%;
+      }
+      #${SCRIPT_ID} .tpda-table.no-meta .tpda-key-cell {
+        width: 58%;
+      }
+      #${SCRIPT_ID} .tpda-table.no-meta .tpda-value-cell {
+        width: 42%;
+      }
+      #${SCRIPT_ID} .tpda-key-cell {
+        color: #ffffff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #${SCRIPT_ID} .tpda-value-cell {
+        color: #ffffff;
+        font-size: 10px;
         font-weight: 700;
+        text-align: right;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
-      #${SCRIPT_ID} .tpda-value.tpda-gold {
+      #${SCRIPT_ID} .tpda-value-cell.tpda-gold {
         color: #d7a544;
       }
-      #${SCRIPT_ID} .tpda-meta {
-        margin-top: 2px;
-        font-size: 11px;
-        color: #bfbfbf;
+      #${SCRIPT_ID} .tpda-meta-cell {
+        font-size: 9px;
+        color: #ffffff;
+        text-align: right;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       #${SCRIPT_ID} .tpda-footnote {
-        margin-top: 10px;
-        font-size: 11px;
-        color: #adadad;
+        margin-top: 2px;
+        font-size: 8px;
+        color: #ffffff;
       }
-      @media (max-width: 520px) {
-        #${SCRIPT_ID} {
-          width: calc(100vw - 10px);
-          margin: 6px auto;
-          padding: 8px;
+      @media (max-width: 510px) {
+        #${SCRIPT_ID} .tpda-table td {
+          font-size: 8px;
         }
-        #${SCRIPT_ID} .tpda-grid {
+        #${SCRIPT_ID} .tpda-value-cell {
+          font-size: 9px;
+        }
+      }
+      @media (max-width: 700px) {
+        #${SCRIPT_ID} .tpda-columns {
           grid-template-columns: 1fr;
+        }
+      }
+      @media (max-width: 360px) {
+        #${SCRIPT_ID} .tpda-value-cell {
+          font-size: 8px;
         }
       }
     `;
@@ -393,19 +479,82 @@
     };
   }
 
+  function readNested(source, path) {
+    if (!source || typeof source !== "object") return null;
+    let node = source;
+    for (const part of path) {
+      if (!node || typeof node !== "object" || !(part in node)) {
+        return null;
+      }
+      node = node[part];
+    }
+    return toNumber(node);
+  }
+
+  function flattenPopularStats(personalstats) {
+    const out = {};
+    if (!personalstats || typeof personalstats !== "object") return out;
+
+    const map = [
+      ["timeplayed", ["other", "activity", "time"]],
+      ["activestreak", ["other", "activity", "streak", "current"]],
+      ["bestactivestreak", ["other", "activity", "streak", "best"]],
+      ["refills", ["other", "refills", "energy"]],
+      ["nerverefills", ["other", "refills", "nerve"]],
+      ["xantaken", ["drugs", "xanax"]],
+      ["overdosed", ["drugs", "overdoses"]],
+      ["rehabcost", ["drugs", "rehabilitations", "fees"]],
+      ["attackswon", ["attacking", "attacks", "won"]],
+      ["rankedwarhits", ["attacking", "faction", "ranked_war_hits"]],
+      ["respectforfaction", ["attacking", "faction", "respect"]],
+      ["reviveskill", ["hospital", "reviving", "skill"]],
+      ["boostersused", ["items", "used", "boosters"]],
+      ["cantaken", ["items", "used", "energy_drinks"]],
+      ["energydrinkused", ["items", "used", "energy_drinks"]],
+      ["statenhancersused", ["items", "used", "stat_enhancers"]]
+    ];
+
+    for (const [key, path] of map) {
+      const value = readNested(personalstats, path);
+      if (value != null) out[key] = value;
+    }
+    return out;
+  }
+
+  async function fetchPopularStatsSnapshot(profileId, timestamp) {
+    try {
+      const params = timestamp == null ? { cat: "popular" } : { cat: "popular", timestamp };
+      const payload = await apiGet(`/user/${profileId}/personalstats`, params);
+      return flattenPopularStats(payload ? payload.personalstats : null);
+    } catch (err) {
+      return {};
+    }
+  }
+
+  async function fetchJobsStatsSnapshot(profileId) {
+    try {
+      const payload = await apiGet(`/user/${profileId}/personalstats`, { cat: "jobs" });
+      const personal = payload ? payload.personalstats : null;
+      const out = {};
+      const total = readNested(personal, ["jobs", "stats", "total"]);
+      const manual = readNested(personal, ["jobs", "stats", "manual"]);
+      const intelligence = readNested(personal, ["jobs", "stats", "intelligence"]);
+      const endurance = readNested(personal, ["jobs", "stats", "endurance"]);
+
+      if (total != null) out.totalworkstats = total;
+      if (manual != null) out.manuallabor = manual;
+      if (intelligence != null) out.intelligence = intelligence;
+      if (endurance != null) out.endurance = endurance;
+      return out;
+    } catch (err) {
+      return {};
+    }
+  }
+
   async function fetchDaysInFaction(profileId) {
     const payload = await apiGet(`/user/${profileId}/faction`);
     const days = payload && payload.faction ? toNumber(payload.faction.days_in_faction) : null;
     return days == null ? null : Math.max(0, Math.floor(days));
-  }
-
-  function delta(currentValue, oldValue, allowNegative) {
-    const current = toNumber(currentValue);
-    const previous = toNumber(oldValue);
-    if (current == null || previous == null) return null;
-    const value = current - previous;
-    if (allowNegative) return value;
-    return Math.max(0, value);
   }
 
   function decimal(value, digits) {
@@ -427,13 +576,10 @@
     const hours = Math.floor(remaining / 3600);
     remaining -= hours * 3600;
     const minutes = Math.floor(remaining / 60);
-    remaining -= minutes * 60;
-    const parts = [];
-    if (days > 0) parts.push(`${days}d`);
-    if (days > 0 || hours > 0) parts.push(`${hours}h`);
-    if (days > 0 || hours > 0 || minutes > 0) parts.push(`${minutes}m`);
-    parts.push(`${remaining}s`);
-    return parts.join(" ");
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    if (minutes > 0) return `${minutes}m`;
+    return `${remaining}s`;
   }
 
   function formatCurrencyCompact(value) {
@@ -454,16 +600,45 @@
     return `${sign}$${formatInteger(absolute)}`;
   }
 
+  function pickStatValue(source, keys) {
+    if (!source || typeof source !== "object") return null;
+    for (const key of keys) {
+      const value = toNumber(source[key]);
+      if (value != null) return value;
+    }
+    return null;
+  }
+
+  function pickDeltaByKeys(current, historic, keys, options) {
+    const config = options || {};
+    const currentValue = pickStatValue(current, keys);
+    const historicValue = pickStatValue(historic, keys);
+
+    if (currentValue == null && historicValue == null) {
+      return config.whenMissing == null ? null : config.whenMissing;
+    }
+
+    if (currentValue == null || historicValue == null) {
+      if (!config.missingAsZero) return null;
+    }
+
+    const c = currentValue == null ? 0 : currentValue;
+    const h = historicValue == null ? 0 : historicValue;
+    const raw = c - h;
+    if (config.allowNegative) return raw;
+    return Math.max(0, raw);
+  }
+
   function buildModel(current, historic, daysInFaction) {
-    const timePlayed = delta(current.timeplayed, historic.timeplayed, false);
-    const xanaxTaken = delta(current.xantaken, historic.xantaken, false);
-    const overdoses = delta(current.overdosed, historic.overdosed, false);
-    const cansUsed = delta(current.cantaken, historic.cantaken, false);
-    const refillEnergy = delta(current.refills, historic.refills, false);
-    const refillNerve = delta(current.nerverefills, historic.nerverefills, false);
-    const boostersUsed = delta(current.boostersused, historic.boostersused, false);
-    const statEnhancers30d = delta(current.statenhancersused, historic.statenhancersused, false);
-    const networthGain = delta(current.networth, historic.networth, true);
+    const timePlayed = pickDeltaByKeys(current, historic, ["timeplayed"], { missingAsZero: false });
+    const xanaxTaken = pickDeltaByKeys(current, historic, ["xantaken"], { missingAsZero: false });
+    const overdoses = pickDeltaByKeys(current, historic, ["overdosed"], { missingAsZero: false });
+    const cansUsed = pickDeltaByKeys(current, historic, ["cantaken", "energydrinkused"], { missingAsZero: false });
+    const refillEnergy = pickDeltaByKeys(current, historic, ["refills"], { missingAsZero: false });
+    const refillNerve = pickDeltaByKeys(current, historic, ["nerverefills"], { missingAsZero: false });
+    const boostersUsed = pickDeltaByKeys(current, historic, ["boostersused"], { missingAsZero: false });
+    const statEnhancers30d = pickDeltaByKeys(current, historic, ["statenhancersused"], { missingAsZero: false });
+    const networthGain = pickDeltaByKeys(current, historic, ["networth"], { allowNegative: true, missingAsZero: false });
 
     let miscBoosters = null;
     if (boostersUsed != null && cansUsed != null && statEnhancers30d != null) {
@@ -473,6 +648,16 @@
     const xanaxWithoutOdDaily = (xanaxTaken != null && overdoses != null)
       ? xanaxTaken / Math.max(1, WINDOW_DAYS - overdoses)
       : null;
+
+    const manualLabor = pickStatValue(current, ["manuallabor", "manual_labor", "manual"]);
+    const intelligence = pickStatValue(current, ["intelligence"]);
+    const endurance = pickStatValue(current, ["endurance"]);
+    const totalWorkStatsFromApi = pickStatValue(current, ["totalworkstats"]);
+    const totalWorkStats = totalWorkStatsFromApi != null
+      ? totalWorkStatsFromApi
+      : (manualLabor != null || intelligence != null || endurance != null)
+          ? (manualLabor || 0) + (intelligence || 0) + (endurance || 0)
+          : null;
 
     return {
       monthly: {
@@ -491,42 +676,74 @@
         statEnhancers30d
       },
       lifetime: {
-        activeStreak: toNumber(current.activestreak),
-        bestActiveStreak: toNumber(current.bestactivestreak),
-        rankedWarHits: toNumber(current.rankedwarhits),
-        attacksWon: toNumber(current.attackswon),
-        reviveSkill: toNumber(current.reviveskill),
-        racingSkill: toNumber(current.racingskill),
-        totalNetworth: toNumber(current.networth),
-        statEnhancersLifetime: toNumber(current.statenhancersused),
-        totalRespect: toNumber(current.respectforfaction),
+        activeStreak: pickStatValue(current, ["activestreak"]),
+        bestActiveStreak: pickStatValue(current, ["bestactivestreak"]),
+        rankedWarHits: pickStatValue(current, ["rankedwarhits"]),
+        attacksWon: pickStatValue(current, ["attackswon"]),
+        reviveSkill: pickStatValue(current, ["reviveskill"]),
+        racingSkill: pickStatValue(current, ["racingskill"]),
+        totalNetworth: pickStatValue(current, ["networth"]),
+        statEnhancersLifetime: pickStatValue(current, ["statenhancersused"]),
+        totalRespect: pickStatValue(current, ["respectforfaction"]),
         daysInFaction,
-        spentOnRehab: toNumber(current.rehabcost),
-        totalWorkStats: toNumber(current.totalworkingstats)
+        spentOnRehab: pickStatValue(current, ["rehabcost"]),
+        totalWorkStats
       }
     };
   }
 
-  function metricCard(label, value, meta, highlight) {
+  function formatRefills(energy, nerve) {
+    const e = toNumber(energy);
+    const n = toNumber(nerve);
+    if (e == null && n == null) return "--";
+    if (e == null) return `${formatInteger(n)}N`;
+    if (n == null) return `${formatInteger(e)}E`;
+    return `${formatInteger(e)}E ${formatInteger(n)}N`;
+  }
+
+  function tableRowsHtml(rows, includeMeta) {
+    return rows
+      .filter(row => !(row.hideWhenMissing && row.raw == null))
+      .map(row => {
+        const metaCell = includeMeta
+          ? `<td class="tpda-meta-cell">${escapeHtml(row.meta || "-")}</td>`
+          : "";
+        return `
+          <tr>
+            <td class="tpda-key-cell">${escapeHtml(row.label)}</td>
+            <td class="tpda-value-cell${row.highlight ? " tpda-gold" : ""}">${escapeHtml(row.value)}</td>
+            ${metaCell}
+          </tr>
+        `;
+      })
+      .join("");
+  }
+
+  function sectionTableHtml(title, rows, includeMeta) {
     return `
-      <div class="tpda-card">
-        <div class="tpda-label">${escapeHtml(label)}</div>
-        <div class="tpda-value${highlight ? " tpda-gold" : ""}">${escapeHtml(value)}</div>
-        ${meta ? `<div class="tpda-meta">${escapeHtml(meta)}</div>` : ""}
-      </div>
+      <section class="tpda-block">
+        <div class="tpda-block-title">${escapeHtml(title)}</div>
+        <table class="tpda-table ${includeMeta ? "has-meta" : "no-meta"}">
+          <tbody>${tableRowsHtml(rows, includeMeta)}</tbody>
+        </table>
+      </section>
     `;
   }
 
   function renderLoading(profileId) {
     const root = ensureRoot();
     if (!root) return;
+    const toggleLabel = state.expanded ? "Collapse" : "Expand";
     root.innerHTML = `
       <div class="tpda-head">
-        <div>
+        <div class="tpda-heading">
           <div class="tpda-title">Profile Data</div>
           <div class="tpda-subtitle">User ID ${escapeHtml(profileId)}</div>
         </div>
-        <button class="tpda-btn" data-action="refresh">Refresh</button>
+        <div class="tpda-actions">
+          <button class="tpda-btn" data-action="refresh">Refresh</button>
+          <button class="tpda-btn" data-action="toggle">${toggleLabel}</button>
+        </div>
       </div>
       <div class="tpda-status is-info">Loading profile stats from Torn API...</div>
     `;
@@ -535,67 +752,199 @@
   function renderError(profileId, message) {
     const root = ensureRoot();
     if (!root) return;
+    const toggleLabel = state.expanded ? "Collapse" : "Expand";
     root.innerHTML = `
       <div class="tpda-head">
-        <div>
+        <div class="tpda-heading">
           <div class="tpda-title">Profile Data</div>
           <div class="tpda-subtitle">User ID ${escapeHtml(profileId)}</div>
         </div>
-        <button class="tpda-btn" data-action="refresh">Retry</button>
+        <div class="tpda-actions">
+          <button class="tpda-btn" data-action="refresh">Retry</button>
+          <button class="tpda-btn" data-action="toggle">${toggleLabel}</button>
+        </div>
       </div>
       <div class="tpda-status is-error">${escapeHtml(message)}</div>
     `;
   }
 
-  function renderStats(profileId, model, invalidStats) {
+  function renderStats(profileId, model) {
     const monthly = model.monthly;
     const lifetime = model.lifetime;
 
-    const monthlyCards = [
-      metricCard("Time Played", formatDuration(monthly.timePlayed), `Average: ${decimal(monthly.timePlayedDailyHours, 2)} hours / day`, true),
-      metricCard("Xanax Taken", formatInteger(monthly.xanaxTaken), `Average: ${decimal(monthly.xanaxDaily, 2)} / day`, true),
-      metricCard("Overdoses", formatInteger(monthly.overdoses), `Without ODs: ${decimal(monthly.xanaxWithoutOdDaily, 2)} / day`, true),
-      metricCard("Cans Used", formatInteger(monthly.cansUsed), `Average: ${decimal(monthly.cansDaily, 2)} / day`, true),
-      metricCard("Refills", `${formatInteger(monthly.refillEnergy)} E + ${formatInteger(monthly.refillNerve)} N`, null, true),
-      metricCard("Misc Boosters", formatInteger(monthly.miscBoosters), null, true),
-      metricCard("Networth Gain", formatCurrencyCompact(monthly.networthGain), null, true),
-      metricCard("Stat Enhancers", formatInteger(monthly.statEnhancers30d), null, true)
-    ].join("");
+    const monthlyRows = [
+      {
+        raw: monthly.timePlayed,
+        label: "Time Played",
+        value: formatDuration(monthly.timePlayed),
+        meta: `${decimal(monthly.timePlayedDailyHours, 2)}h/d`,
+        highlight: true
+      },
+      {
+        raw: monthly.xanaxTaken,
+        label: "Xanax Taken",
+        value: formatInteger(monthly.xanaxTaken),
+        meta: `${decimal(monthly.xanaxDaily, 2)}/d`,
+        highlight: true
+      },
+      {
+        raw: monthly.overdoses,
+        label: "Overdoses",
+        value: formatInteger(monthly.overdoses),
+        meta: `Without ODs ${decimal(monthly.xanaxWithoutOdDaily, 2)}/d`,
+        highlight: true
+      },
+      {
+        raw: monthly.cansUsed,
+        label: "Cans Used",
+        value: formatInteger(monthly.cansUsed),
+        meta: `${decimal(monthly.cansDaily, 2)}/d`,
+        highlight: true
+      },
+      {
+        raw: monthly.refillEnergy != null || monthly.refillNerve != null ? 1 : null,
+        label: "Refills",
+        value: formatRefills(monthly.refillEnergy, monthly.refillNerve),
+        meta: null,
+        highlight: true
+      },
+      {
+        raw: monthly.miscBoosters,
+        label: "Misc Boosters",
+        value: formatInteger(monthly.miscBoosters),
+        meta: null,
+        highlight: true
+      },
+      {
+        raw: monthly.networthGain,
+        label: "Networth Gain",
+        value: formatCurrencyCompact(monthly.networthGain),
+        meta: null,
+        highlight: true
+      },
+      {
+        raw: monthly.statEnhancers30d,
+        label: "Stat Enhancers",
+        value: formatInteger(monthly.statEnhancers30d),
+        meta: null,
+        highlight: true
+      }
+    ];
 
-    const lifetimeCards = [
-      metricCard("Activity Streak", formatInteger(lifetime.activeStreak), `Best Streak: ${formatInteger(lifetime.bestActiveStreak)}`, false),
-      metricCard("Ranked War Hits", formatInteger(lifetime.rankedWarHits), null, false),
-      metricCard("Attacks Won", formatInteger(lifetime.attacksWon), null, false),
-      metricCard("Revive Skill", decimal(lifetime.reviveSkill, 2), null, false),
-      metricCard("Racing Skill", decimal(lifetime.racingSkill, 2), null, false),
-      metricCard("Total Networth", formatCurrencyCompact(lifetime.totalNetworth), null, false),
-      metricCard("Lifetime SE Usage", formatInteger(lifetime.statEnhancersLifetime), null, false),
-      metricCard("Total Respect", formatInteger(lifetime.totalRespect), null, false),
-      metricCard("Days in Faction", formatInteger(lifetime.daysInFaction), null, false),
-      metricCard("Spent on Rehab", formatCurrencyCompact(lifetime.spentOnRehab), null, false),
-      metricCard("Total Work Stats", formatInteger(lifetime.totalWorkStats), null, false)
-    ].join("");
+    const lifetimeRows = [
+      {
+        raw: lifetime.activeStreak,
+        label: "Activity Streak",
+        value: `${formatInteger(lifetime.activeStreak)} (Best ${formatInteger(lifetime.bestActiveStreak)})`,
+        meta: null
+      },
+      {
+        raw: lifetime.rankedWarHits,
+        label: "Ranked War Hits",
+        value: formatInteger(lifetime.rankedWarHits),
+        meta: null
+      },
+      {
+        raw: lifetime.attacksWon,
+        label: "Attacks Won",
+        value: formatInteger(lifetime.attacksWon),
+        meta: null
+      },
+      {
+        raw: lifetime.reviveSkill,
+        label: "Revive Skill",
+        value: decimal(lifetime.reviveSkill, 2),
+        meta: null
+      },
+      {
+        raw: lifetime.racingSkill,
+        label: "Racing Skill",
+        value: decimal(lifetime.racingSkill, 2),
+        meta: null
+      },
+      {
+        raw: lifetime.totalNetworth,
+        label: "Total Networth",
+        value: formatCurrencyCompact(lifetime.totalNetworth),
+        meta: null
+      },
+      {
+        raw: lifetime.statEnhancersLifetime,
+        label: "Lifetime SE Usage",
+        value: formatInteger(lifetime.statEnhancersLifetime),
+        meta: null
+      },
+      {
+        raw: lifetime.totalRespect,
+        label: "Total Respect",
+        value: formatInteger(lifetime.totalRespect),
+        meta: null
+      },
+      {
+        raw: lifetime.daysInFaction,
+        label: "Days in Faction",
+        value: formatInteger(lifetime.daysInFaction),
+        meta: null
+      },
+      {
+        raw: lifetime.spentOnRehab,
+        label: "Spent on Rehab",
+        value: formatCurrencyCompact(lifetime.spentOnRehab),
+        meta: null
+      },
+      {
+        raw: lifetime.totalWorkStats,
+        label: "Total Work Stats",
+        value: formatInteger(lifetime.totalWorkStats),
+        meta: null,
+        hideWhenMissing: true
+      }
+    ];
 
-    const warning = Array.isArray(invalidStats) && invalidStats.length
-      ? `<div class="tpda-status is-error">Skipped unsupported stat keys: ${escapeHtml(invalidStats.join(", "))}</div>`
-      : "";
+    const compactRows = [
+      { raw: monthly.timePlayed, label: "30-Day Time Played", value: formatDuration(monthly.timePlayed), highlight: true },
+      { raw: monthly.xanaxTaken, label: "30-Day Xanax Taken", value: formatInteger(monthly.xanaxTaken), highlight: true },
+      { raw: monthly.overdoses, label: "30-Day Overdoses", value: formatInteger(monthly.overdoses), highlight: true },
+      { raw: monthly.networthGain, label: "30-Day Networth Gain", value: formatCurrencyCompact(monthly.networthGain), highlight: true },
+      { raw: lifetime.totalNetworth, label: "Total Networth", value: formatCurrencyCompact(lifetime.totalNetworth) },
+      { raw: lifetime.attacksWon, label: "Attacks Won", value: formatInteger(lifetime.attacksWon) },
+      { raw: lifetime.totalRespect, label: "Total Respect", value: formatInteger(lifetime.totalRespect) },
+      { raw: lifetime.daysInFaction, label: "Days in Faction", value: formatInteger(lifetime.daysInFaction) }
+    ];
 
-    const root = ensureRoot();
-    if (!root) return;
-    root.innerHTML = `
+    const toggleLabel = state.expanded ? "Collapse" : "Expand";
+    const header = `
       <div class="tpda-head">
-        <div>
+        <div class="tpda-heading">
           <div class="tpda-title">Profile Data</div>
           <div class="tpda-subtitle">User ID ${escapeHtml(profileId)}</div>
         </div>
-        <button class="tpda-btn" data-action="refresh">Refresh</button>
+        <div class="tpda-actions">
+          <button class="tpda-btn" data-action="refresh">Refresh</button>
+          <button class="tpda-btn" data-action="toggle">${toggleLabel}</button>
+        </div>
       </div>
-      ${warning}
-      <div class="tpda-section-title">Last ${WINDOW_DAYS} days</div>
-      <div class="tpda-grid">${monthlyCards}</div>
-      <div class="tpda-section-title">Current / lifetime</div>
-      <div class="tpda-grid">${lifetimeCards}</div>
-      <div class="tpda-footnote">Values in gold show activity over the past ${WINDOW_DAYS} days. Other values are current or lifetime totals.</div>
+    `;
+
+    const root = ensureRoot();
+    if (!root) return;
+
+    if (!state.expanded) {
+      root.innerHTML = `
+        ${header}
+        ${sectionTableHtml("Quick View", compactRows, false)}
+        <div class="tpda-footnote">Tap Expand for full table.</div>
+      `;
+      return;
+    }
+
+    root.innerHTML = `
+      ${header}
+      <div class="tpda-columns">
+        ${sectionTableHtml(`Last ${WINDOW_DAYS} Days`, monthlyRows, true)}
+        ${sectionTableHtml("Current / Lifetime", lifetimeRows, false)}
+      </div>
+      <div class="tpda-footnote">Gold = ${WINDOW_DAYS} day activity.</div>
     `;
   }
 
@@ -616,9 +965,12 @@
 
     const monthAgo = Math.floor(Date.now() / 1000) - WINDOW_SECONDS;
 
-    const [currentResult, historicResult, daysInFaction] = await Promise.all([
+    const [currentResult, historicResult, currentPopular, historicPopular, currentJobs, daysInFaction] = await Promise.all([
       fetchStatsSnapshot(profileId, CURRENT_STAT_NAMES, null, "Current"),
       fetchStatsSnapshot(profileId, MONTHLY_STAT_NAMES, monthAgo, "Historical"),
+      fetchPopularStatsSnapshot(profileId, null),
+      fetchPopularStatsSnapshot(profileId, monthAgo),
+      fetchJobsStatsSnapshot(profileId),
       fetchDaysInFaction(profileId).catch(() => null)
     ]);
 
@@ -626,8 +978,21 @@
       ...(currentResult.invalidStats || []),
       ...(historicResult.invalidStats || [])
     ]));
+    if (invalidStats.length) {
+      console.warn("[TPDA Profile Data] Skipped unsupported stats:", invalidStats.join(", "));
+    }
 
-    const model = buildModel(currentResult.stats || {}, historicResult.stats || {}, daysInFaction);
+    const currentStats = {
+      ...(currentPopular || {}),
+      ...(currentJobs || {}),
+      ...(currentResult.stats || {})
+    };
+    const historicStats = {
+      ...(historicPopular || {}),
+      ...(historicResult.stats || {})
+    };
+
+    const model = buildModel(currentStats, historicStats, daysInFaction);
     const record = { time: Date.now(), model, invalidStats };
     state.cache.set(profileId, record);
     pruneCache();
@@ -647,7 +1012,7 @@
     try {
       const record = await fetchProfileData(profileId, !!force);
       if (thisRequestId !== state.requestId) return;
-      renderStats(profileId, record.model, record.invalidStats);
+      renderStats(profileId, record.model);
     } catch (err) {
       if (thisRequestId !== state.requestId) return;
       const message = err && err.message ? err.message : "Failed to load profile data.";
@@ -656,10 +1021,26 @@
   }
 
   function handleRootClick(event) {
-    const button = event.target.closest("button[data-action='refresh']");
+    const button = event.target.closest("button[data-action]");
     if (!button) return;
-    if (!state.profileId) return;
-    loadProfile(state.profileId, true);
+    const action = button.getAttribute("data-action");
+    if (action === "toggle") {
+      state.expanded = !state.expanded;
+      saveExpandedPreference(state.expanded);
+      if (state.profileId) {
+        const cached = state.cache.get(state.profileId);
+        if (cached?.model) {
+          renderStats(state.profileId, cached.model);
+        } else {
+          loadProfile(state.profileId, false);
+        }
+      }
+      return;
+    }
+    if (action === "refresh") {
+      if (!state.profileId) return;
+      loadProfile(state.profileId, true);
+    }
   }
 
   function tick() {
