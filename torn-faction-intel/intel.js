@@ -696,13 +696,29 @@
 
     const cacheKey = String(context.cacheKey);
     const overview = state.factionCache.get(cacheKey);
+    const modelRecord = state.factionModelCache.get(cacheKey);
     const indexedMemberIds = state.factionMemberIndex.get(cacheKey) || [];
     const overviewMemberIds = overview && Array.isArray(overview.members)
       ? overview.members
         .map((member) => (member && member.id != null ? String(member.id) : ""))
         .filter((value) => /^[0-9]{1,12}$/.test(value))
       : [];
-    const memberIds = Array.from(new Set([...indexedMemberIds, ...overviewMemberIds]));
+    const modelLeaderIds = [];
+    if (modelRecord && modelRecord.model && modelRecord.model.leaders) {
+      for (const rows of Object.values(modelRecord.model.leaders)) {
+        if (!Array.isArray(rows)) continue;
+        for (const row of rows) {
+          const id = row && row.member && row.member.id != null ? String(row.member.id) : "";
+          if (/^[0-9]{1,12}$/.test(id)) modelLeaderIds.push(id);
+        }
+      }
+    }
+
+    const memberIds = Array.from(new Set([
+      ...indexedMemberIds,
+      ...overviewMemberIds,
+      ...modelLeaderIds
+    ]));
 
     let removedMembers = 0;
     for (const memberId of memberIds) {
